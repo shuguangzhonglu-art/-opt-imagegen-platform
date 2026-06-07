@@ -1,0 +1,16 @@
+[Unit]
+Description=HEMA API Image Platform
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/imagegen-platform
+Environment=NODE_ENV=production
+Environment=PORT=4320
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

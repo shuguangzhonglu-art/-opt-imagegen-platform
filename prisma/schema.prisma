@@ -1,0 +1,189 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum RedeemCodeStatus {
+  UNUSED
+  REDEEMED
+  EXPIRED
+  DISABLED
+}
+
+enum TaskStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+enum CreditTransactionType {
+  SIGNUP_BONUS
+  ADMIN_ADJUSTMENT
+  REDEEM_CODE
+  GENERATION_DEBIT
+  GENERATION_REFUND
+}
+
+model User {
+  id            String              @id @default(cuid())
+  email         String              @unique
+  passwordHash  String
+  status        UserStatus          @default(ACTIVE)
+  role          UserRole            @default(USER)
+  createdAt     DateTime            @default(now())
+  lastLoginAt   DateTime?
+  wallet        Wallet?
+  sessions      Session[]
+  transactions  CreditTransaction[]
+  redeemedCodes RedeemCode[]        @relation("RedeemedBy")
+  tasks         GenerationTask[]
+  images        GeneratedImage[]
+  auditLogs     AdminAuditLog[]     @relation("AdminActor")
+  createdCodes  RedeemCode[]        @relation("CreatedBy")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Wallet {
+  userId    String   @id
+  balance   Int      @default(0)
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model CreditTransaction {
+  id            String                @id @default(cuid())
+  userId        String
+  type          CreditTransactionType
+  amount        Int
+  balanceAfter  Int
+  relatedTaskId String?
+  relatedCodeId String?
+  note          String
+  createdAt     DateTime              @default(now())
+  user          User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  relatedTask   GenerationTask?       @relation(fields: [relatedTaskId], references: [id])
+  relatedCode   RedeemCode?           @relation(fields: [relatedCodeId], references: [id])
+
+  @@index([userId, createdAt])
+}
+
+model RedeemCode {
+  id           String           @id @default(cuid())
+  code         String           @unique
+  batchName    String
+  creditAmount Int
+  status       RedeemCodeStatus @default(UNUSED)
+  expiresAt    DateTime?
+  createdById  String?
+  redeemedById String?
+  redeemedAt   DateTime?
+  createdAt    DateTime         @default(now())
+  createdBy    User?            @relation("CreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  redeemedBy   User?            @relation("RedeemedBy", fields: [redeemedById], references: [id], onDelete: SetNull)
+  transactions CreditTransaction[]
+
+  @@index([status, createdAt])
+}
+
+model GenerationTask {
+  id           String              @id @default(cuid())
+  userId       String
+  prompt       String
+  sourceImagePath String?
+  style        String
+  size         String
+  quantity     Int
+  quality      String
+  unitCost     Int
+  totalCost    Int
+  status       TaskStatus          @default(PENDING)
+  errorMessage String?
+  requestedAt  DateTime            @default(now())
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  images       GeneratedImage[]
+  transactions CreditTransaction[]
+
+  @@index([userId, requestedAt])
+  @@index([status, requestedAt])
+}
+
+model GeneratedImage {
+  id        String         @id @default(cuid())
+  taskId    String
+  userId    String
+  filePath  String
+  width     Int
+  height    Int
+  createdAt DateTime       @default(now())
+  task      GenerationTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model AdminAuditLog {
+  id          String   @id @default(cuid())
+  adminUserId String
+  action      String
+  targetType  String
+  targetId    String
+  payload     String
+  createdAt   DateTime @default(now())
+  adminUser   User     @relation("AdminActor", fields: [adminUserId], references: [id], onDelete: Cascade)
+
+  @@index([adminUserId, createdAt])
+}
+
+model AppSetting {
+  id                Int      @id
+  defaultUnitCost   Int
+  availableSizes    String
+  taskConcurrency   Int
+  fileRetentionDays Int
+  signupBonus       Int
+  updatedAt         DateTime @updatedAt
+  createdAt         DateTime @default(now())
+}
+
+model DirectImageRecord {
+  id             String   @id @default(cuid())
+  userKeyHash    String
+  prompt         String
+  size           String
+  filePath       String
+  width          Int
+  height         Int
+  sourceImagePath String?
+  createdAt      DateTime @default(now())
+
+  @@index([userKeyHash, createdAt])
+}
