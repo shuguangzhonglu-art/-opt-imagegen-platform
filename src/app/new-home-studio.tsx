@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import type { FormEvent } from "react";
 import type { CSSProperties } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Notice } from "@/components/notice";
 import { parseSizes } from "@/lib/config";
@@ -57,6 +57,17 @@ function getImageDisplayAspectRatio(image: GalleryItem) {
   if (image.size) return getDisplayAspectRatio(image.size);
   if (image.width > 0 && image.height > 0) return getDisplayAspectRatio(`${image.width}x${image.height}`);
   return "1 / 1";
+}
+
+function getImageDisplayRatioValue(image: GalleryItem) {
+  const source = image.size || (image.width > 0 && image.height > 0 ? `${image.width}x${image.height}` : "1x1");
+  const [width, height] = source.split("x").map(Number);
+  if (!width || !height) return 1;
+
+  const ratio = width / height;
+  if (ratio > 1) return Math.min(ratio, 4 / 3);
+  if (ratio < 1) return 1 / Math.min(1 / ratio, 4 / 3);
+  return 1;
 }
 
 function getSizePreviewStyle(size: string): CSSProperties {
@@ -747,10 +758,18 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
   });
   const runningPendingCards = pendingCards.filter((card) => card.status === "running");
   const failedPendingCards = pendingCards.filter((card) => card.status === "failed");
-  const galleryColumns = Array.from({ length: galleryColumnCount }, () => [] as GalleryItem[]);
-  filteredImages.forEach((image, index) => {
-    galleryColumns[index % galleryColumnCount].push(image);
-  });
+  const galleryColumns = useMemo(() => {
+    const columns = Array.from({ length: galleryColumnCount }, () => [] as GalleryItem[]);
+    const columnHeights = Array.from({ length: galleryColumnCount }, () => 0);
+
+    filteredImages.forEach((image) => {
+      const targetColumn = columnHeights.indexOf(Math.min(...columnHeights));
+      columns[targetColumn].push(image);
+      columnHeights[targetColumn] += 1 / getImageDisplayRatioValue(image);
+    });
+
+    return columns;
+  }, [filteredImages, galleryColumnCount]);
 
   return (
     <main className={`new-home-page ${isKvMode ? "kv-page" : ""}`}>
