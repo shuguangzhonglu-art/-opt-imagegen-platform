@@ -580,6 +580,11 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
   async function handleDeleteFailedTask(taskId: string) {
     const confirmed = window.confirm("确认删除这条失败任务吗？");
     if (!confirmed) return;
+    if (taskId.startsWith("failed-") || taskId.startsWith("local-")) {
+      setPendingCards((current) => current.filter((card) => card.taskId !== taskId));
+      setActiveTaskIds((current) => current.filter((id) => id !== taskId));
+      return;
+    }
     const result = await deleteDirectGenerateTaskAction(taskId);
     if (!result.success) {
       window.alert(result.error || "删除失败");
