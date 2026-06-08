@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import {
   authenticateUserDetailed,
+  backfillSignupBonusIfMissing,
   createEmailVerificationCode,
   createSession,
   createEmailVerificationToken,
@@ -63,6 +64,7 @@ export async function loginAction(formData: FormData) {
     redirect(withMessage(`/auth/login?redirectTo=${encodeURIComponent(redirectTo)}`, "error", message));
   }
 
+  await backfillSignupBonusIfMissing(result.user.id);
   await createSession(result.user.id);
   redirect(getSafeRedirectPath(parsed.data.redirectTo));
 }

@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { getPlatformConfig } from "@/lib/config";
 import { prisma } from "@/lib/db";
 import { hashPassword, verifyPassword } from "@/lib/password";
+import { adjustWalletBalance } from "@/lib/services/wallet";
 
 const SESSION_COOKIE = "flux_session";
 const SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 14;
@@ -120,6 +121,36 @@ export async function authenticateUserDetailed(email: string, password: string):
   }
 
   return { ok: true, user };
+}
+
+export async function backfillSignupBonusIfMissing(userId: string) {
+  const config = await getPlatformConfig();
+  if (config.signupBonus <= 0) return;
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: {
+      wallet: true,
+      transactions: {
+        where: { type: "SIGNUP_BONUS" },
+        select: { id: true },
+        take: 1,
+      },
+    },
+  });
+
+  if (!user) return;
+  if (user.role === "ADMIN") return;
+  if (!user.emailVerifiedAt && config.emailVerificationEnabled) return;
+  if (user.transactions.length > 0) return;
+  if ((user.wallet?.balance ?? 0) > 0) return;
+
+  await adjustWalletBalance({
+    userId,
+    amount: config.signupBonus,
+    type: "SIGNUP_BONUS",
+    note: "历史账号补发注册积分",
+  });
 }
 
 export async function createEmailVerificationToken(userId: string) {
