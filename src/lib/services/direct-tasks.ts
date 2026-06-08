@@ -63,14 +63,25 @@ function getElapsedMs(task: { startedAt?: Date | null; finishedAt?: Date | null 
   return (task.finishedAt ?? new Date()).getTime() - task.startedAt.getTime();
 }
 
-function formatTaskError(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
+function normalizeTaskErrorMessage(message?: string | null) {
+  if (!message) return undefined;
 
   if (/<html|<!doctype|cloudflare|error code 524|timeout occurred/i.test(message)) {
     return "上游生成超时，请稍后重试";
   }
 
-  return message.length > 240 ? `${message.slice(0, 240)}...` : message;
+  if (/request ID [a-f0-9-]{8,}/i.test(message)) {
+    return "上游生成失败，请重试";
+  }
+
+  const compact = message.replace(/\s+/g, " ").trim();
+  return compact.length > 120 ? `${compact.slice(0, 120)}...` : compact;
+}
+
+function formatTaskError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+
+  return normalizeTaskErrorMessage(message) ?? "生成失败";
 }
 
 async function taskToState(taskId: string, userId?: string): Promise<DirectGenerateTaskState> {
@@ -111,7 +122,7 @@ async function taskToState(taskId: string, userId?: string): Promise<DirectGener
   return {
     taskId: task.id,
     status: toDirectStatus(task.status),
-    error: task.errorMessage ?? undefined,
+    error: normalizeTaskErrorMessage(task.errorMessage),
     rawError: task.rawError ?? undefined,
     success: task.status === "SUCCESS" ? `生成完成，共 ${images.length} 张` : undefined,
     createdAt: task.requestedAt.getTime(),

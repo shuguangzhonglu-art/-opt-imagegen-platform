@@ -3140,14 +3140,20 @@ p {
 
 .new-home-pending-error {
   max-width: 220px;
+  max-height: 66px;
+  overflow: hidden;
   text-align: center;
   color: #c44a4a;
   font-size: 14px;
   line-height: 1.5;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 .new-home-pending-actions {
   margin-top: 4px;
+  flex-shrink: 0;
 }
 
 .new-home-image {
