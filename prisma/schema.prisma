@@ -65,6 +65,7 @@ model User {
   lastLoginAt   DateTime?
   wallet        Wallet?
   sessions      Session[]
+  browserLocks  BrowserLock[]
   emailTokens   EmailVerificationToken[]
   transactions  CreditTransaction[]
   redeemedCodes RedeemCode[]        @relation("RedeemedBy")
@@ -97,6 +98,17 @@ model Session {
 
   @@index([userId])
   @@index([expiresAt])
+}
+
+model BrowserLock {
+  id            String   @id @default(cuid())
+  browserKeyHash String  @unique
+  userId        String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model Wallet {

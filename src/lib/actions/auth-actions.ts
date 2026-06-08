@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import {
   authenticateUserDetailed,
+  BrowserAccountConflictError,
   createEmailVerificationCode,
   createSession,
   createEmailVerificationToken,
@@ -63,7 +64,14 @@ export async function loginAction(formData: FormData) {
     redirect(withMessage(`/auth/login?redirectTo=${encodeURIComponent(redirectTo)}`, "error", message));
   }
 
-  await createSession(result.user.id);
+  try {
+    await createSession(result.user.id);
+  } catch (error) {
+    if (error instanceof BrowserAccountConflictError) {
+      redirect(withMessage(`/auth/login?redirectTo=${encodeURIComponent(redirectTo)}`, "error", error.message));
+    }
+    throw error;
+  }
   redirect(getSafeRedirectPath(parsed.data.redirectTo));
 }
 
@@ -141,7 +149,14 @@ export async function verifyRegisterCodeAction(formData: FormData) {
     redirect(withMessage(`/auth/register?step=verify&email=${encodeURIComponent(parsed.data.email)}&redirectTo=${encodeURIComponent(redirectTo)}`, "error", "验证码错误或已过期"));
   }
 
-  await createSession(result.userId);
+  try {
+    await createSession(result.userId);
+  } catch (error) {
+    if (error instanceof BrowserAccountConflictError) {
+      redirect(withMessage(`/auth/login?redirectTo=${encodeURIComponent(redirectTo)}`, "error", error.message));
+    }
+    throw error;
+  }
   redirect(redirectTo);
 }
 
