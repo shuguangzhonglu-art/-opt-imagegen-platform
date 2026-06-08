@@ -289,10 +289,16 @@ export async function processDirectGenerateTaskById(taskId: string) {
   const started = Date.now();
 
   const claimed = await prisma.generationTask.updateMany({
-    where: { id: task.id, status: "PENDING" },
+    where: {
+      id: task.id,
+      OR: [
+        { status: "PENDING" },
+        { status: "RUNNING", queueJobId: task.id },
+      ],
+    },
     data: {
       status: "RUNNING",
-      startedAt: new Date(),
+      startedAt: task.status === "RUNNING" ? task.startedAt : new Date(),
       errorMessage: null,
       rawError: null,
     },
