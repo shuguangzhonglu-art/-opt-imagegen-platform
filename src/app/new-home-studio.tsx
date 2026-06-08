@@ -132,11 +132,11 @@ function ActionIcon({ name }: { name: "download" | "retry" | "reuse" | "edit" | 
 }
 
 function readStoredSize() {
-  if (typeof window === "undefined") return "1024x1024";
+  if (typeof window === "undefined") return "";
   try {
-    return window.localStorage.getItem(SIZE_STORAGE_KEY) || "1024x1024";
+    return window.localStorage.getItem(SIZE_STORAGE_KEY) || "";
   } catch {
-    return "1024x1024";
+    return "";
   }
 }
 
@@ -1019,7 +1019,7 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                       className={`new-home-size-option ${size === item.label ? "selected" : ""}`}
                       aria-checked={size === item.label}
                       onClick={() => setSize(item.label)}
-                      >
+                    >
                       <i
                         className="new-home-size-preview"
                         style={getSizePreviewStyle(item.label)}
