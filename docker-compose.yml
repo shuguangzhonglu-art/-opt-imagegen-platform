@@ -1,4 +1,24 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: imagegen-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: imagegen
+      POSTGRES_USER: imagegen
+      POSTGRES_PASSWORD: imagegen
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: imagegen-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
   imagegen-platform:
     build:
       context: .
@@ -8,11 +28,37 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: "file:/app/data/prod.db"
+      DATABASE_URL: "postgresql://imagegen:imagegen@postgres:5432/imagegen"
+      REDIS_URL: "redis://redis:6379"
       NODE_ENV: "production"
       PORT: "3000"
+    depends_on:
+      - postgres
+      - redis
     ports:
       - "3000:3000"
     volumes:
-      - ./data:/app/data
       - ./public/generated:/app/public/generated
+
+  imagegen-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: imagegen-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "postgresql://imagegen:imagegen@postgres:5432/imagegen"
+      REDIS_URL: "redis://redis:6379"
+      NODE_ENV: "production"
+    depends_on:
+      - postgres
+      - redis
+      - imagegen-platform
+    command: ["npm", "run", "worker:direct"]
+    volumes:
+      - ./public/generated:/app/public/generated
+
+volumes:
+  postgres-data:

@@ -92,7 +92,7 @@ export function DirectStudio() {
       }
 
       setHistoryLoading(true);
-      const history = await getDirectHistoryAction(normalizedKey, {
+      const history = await getDirectHistoryAction({
         offset: 0,
         limit: HISTORY_PAGE_SIZE,
       });
@@ -167,7 +167,7 @@ export function DirectStudio() {
     }
 
     setHistoryLoading(true);
-    const nextBatch = await getDirectHistoryAction(normalizedKey, {
+    const nextBatch = await getDirectHistoryAction({
       offset: displayedHistory?.length ?? 0,
       limit: HISTORY_PAGE_SIZE,
     });

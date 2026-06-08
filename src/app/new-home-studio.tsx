@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
 import type { FormEvent } from "react";
 import type { CSSProperties } from "react";
 import { useEffect, useRef, useState } from "react";
@@ -10,14 +11,16 @@ import { parseSizes } from "@/lib/config";
 import {
   deleteDirectGenerateTaskAction,
   deleteDirectHistoryItemAction,
+  getCurrentUserOverviewAction,
   getDirectHistoryAction,
-  getDirectGenerateTasksByApiKeyAction,
+  getDirectGenerateTasksAction,
+  getKvGenerateTasksAction,
+  getKvHistoryAction,
   retryDirectGenerateTaskAction,
   type DirectGenerateState,
 } from "@/lib/actions/user-actions";
 import type { DirectGenerateTaskState } from "@/lib/services/direct-tasks";
 
-const STORAGE_KEY = "direct-image-generator-api-key";
 const SIZE_STORAGE_KEY = "direct-image-generator-size";
 const SIZE_OPTIONS = parseSizes("1024x1024:0,1024x1536:0,1536x1024:0,1024x1792:0,1792x1024:0");
 const HISTORY_PAGE_SIZE = 12;
@@ -38,13 +41,26 @@ function getSizeAspectRatio(size: string) {
   return `${width} / ${height}`;
 }
 
-function readStoredApiKey() {
-  if (typeof window === "undefined") return "";
-  try {
-    return window.localStorage.getItem(STORAGE_KEY) || "";
-  } catch {
-    return "";
+function getSizePreviewStyle(size: string): CSSProperties {
+  const [width, height] = size.split("x").map(Number);
+  if (!width || !height) return { width: 38, height: 38 };
+  const maxWidth = 52;
+  const maxHeight = 42;
+  const ratio = width / height;
+  if (ratio >= 1) {
+    return { width: maxWidth, height: Math.max(24, Math.round(maxWidth / ratio)) };
   }
+  return { width: Math.max(24, Math.round(maxHeight * ratio)), height: maxHeight };
+}
+
+function formatHistoryDate(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+  });
 }
 
 function readStoredSize() {
@@ -93,13 +109,52 @@ type ReferenceItem = {
   file?: File;
 };
 
-export function NewHomeStudio() {
+type KvScene = {
+  id: string;
+  title: string;
+  description: string;
+};
+
+type KvPromptPlan = {
+  sceneId: string;
+  title: string;
+  prompt: string;
+};
+
+type UserOverview = {
+  email: string;
+  displayName: string;
+  role: string;
+  balance: number;
+  taskCount: number;
+};
+
+type StudioMode = "image" | "kv";
+
+const KV_SCENES: KvScene[] = [
+  { id: "01", title: "01:主KV视觉", description: "Hero Shot，严格还原产品图" },
+  { id: "02", title: "02:生活/使用场景", description: "Lifestyle，展示实际使用" },
+  { id: "03", title: "03:工艺/技术/概念", description: "Process/Concept，卖点可视化" },
+  { id: "04", title: "04:特写 - 放大产品细节", description: "Detail 01，包装与局部" },
+  { id: "05", title: "05:特写 - 材质/质感", description: "Detail 02，材质和触感" },
+  { id: "06", title: "06:特写 - 功能细节", description: "Detail 03，结构和功能" },
+  { id: "07", title: "07:用户评价/口碑", description: "Review，评分和反馈" },
+  { id: "08", title: "08:品牌故事/配色灵感", description: "Moodboard，品牌调性" },
+  { id: "09", title: "09:产品参数/规格表", description: "Specifications，参数表" },
+  { id: "10", title: "10:使用指南/注意事项", description: "Usage Guide，步骤和说明" },
+];
+
+export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: UserOverview; mode?: StudioMode }) {
+  const isKvMode = mode === "kv";
   const [state, setState] = useState<DirectGenerateState>({});
+  const [userOverview, setUserOverview] = useState<UserOverview>(currentUser);
   const [activeTaskIds, setActiveTaskIds] = useState<string[]>([]);
-  const [apiKey, setApiKey] = useState("");
-  const [apiKeySaved, setApiKeySaved] = useState(false);
-  const [size, setSize] = useState("1024x1024");
-  const [prompt, setPrompt] = useState("");
+  const [size, setSize] = useState(() => (isKvMode ? "1024x1792" : readStoredSize()));
+  const [prompt, setPrompt] = useState(
+    isKvMode
+      ? "产品：\n品牌：\n核心卖点：\n目标人群：\n画面风格：高端电商主KV，产品居中，干净背景，卖点信息可视化。"
+      : "",
+  );
   const [searchQuery, setSearchQuery] = useState("");
   const [referenceItems, setReferenceItems] = useState<ReferenceItem[]>([]);
   const [historyImages, setHistoryImages] = useState<DirectGenerateState["history"]>([]);
@@ -109,13 +164,27 @@ export function NewHomeStudio() {
   const [pendingCards, setPendingCards] = useState<PendingCard[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitMessage, setSubmitMessage] = useState("");
+  const [kvBrand, setKvBrand] = useState("");
+  const [kvInfo, setKvInfo] = useState("");
+  const [kvLogo, setKvLogo] = useState<ReferenceItem | null>(null);
+  const [selectedSceneIds, setSelectedSceneIds] = useState<string[]>(["01"]);
+  const [kvVisualStyle, setKvVisualStyle] = useState("AI自动匹配");
+  const [kvTypography, setKvTypography] = useState("AI自动匹配");
+  const [kvPlans, setKvPlans] = useState<KvPromptPlan[]>([]);
+  const [kvReport, setKvReport] = useState("");
+  const [isAnalyzingKv, setIsAnalyzingKv] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const logoInputRef = useRef<HTMLInputElement | null>(null);
   const resultPanelRef = useRef<HTMLElement | null>(null);
+  const selectedKvPlans = kvPlans.filter((plan) => selectedSceneIds.includes(plan.sceneId));
 
-  useEffect(() => {
-    setApiKey(readStoredApiKey());
-    setSize(readStoredSize());
-  }, []);
+  async function refreshUserOverview() {
+    try {
+      setUserOverview(await getCurrentUserOverviewAction());
+    } catch {
+      return;
+    }
+  }
 
   useEffect(() => {
     window.localStorage.setItem(SIZE_STORAGE_KEY, size);
@@ -125,24 +194,13 @@ export function NewHomeStudio() {
     let cancelled = false;
 
     async function loadHistory() {
-      const normalizedKey = apiKey.trim();
-      if (normalizedKey.length < 10) {
-        if (!cancelled) {
-          setHistoryImages([]);
-          setHasMoreHistory(false);
-          setPendingCards([]);
-          setActiveTaskIds([]);
-        }
-        return;
-      }
-
       setHistoryLoading(true);
       const [history, tasks] = await Promise.all([
-        getDirectHistoryAction(normalizedKey, {
+        (isKvMode ? getKvHistoryAction : getDirectHistoryAction)({
           offset: 0,
           limit: HISTORY_PAGE_SIZE,
         }),
-        getDirectGenerateTasksByApiKeyAction(normalizedKey),
+        isKvMode ? getKvGenerateTasksAction() : getDirectGenerateTasksAction(),
       ]);
 
       if (!cancelled) {
@@ -173,7 +231,7 @@ export function NewHomeStudio() {
     return () => {
       cancelled = true;
     };
-  }, [apiKey]);
+  }, [isKvMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -203,6 +261,7 @@ export function NewHomeStudio() {
       if (cancelled) return;
 
       if (task.status === "succeeded" || task.status === "failed") {
+        void refreshUserOverview();
         setActiveTaskIds((current) => current.filter((id) => id !== taskId));
         setState({
           error: task.error,
@@ -223,9 +282,16 @@ export function NewHomeStudio() {
               )
             : current.filter((card) => card.taskId !== taskId),
         );
-        if (task.history) {
+        if (task.history && !isKvMode) {
           setHistoryImages(task.history);
           setHasMoreHistory(task.history.length === HISTORY_PAGE_SIZE);
+        } else if (task.status === "succeeded" && isKvMode) {
+          const history = await getKvHistoryAction({
+            offset: 0,
+            limit: HISTORY_PAGE_SIZE,
+          });
+          setHistoryImages(history);
+          setHasMoreHistory(history.length === HISTORY_PAGE_SIZE);
         }
         return;
       }
@@ -242,7 +308,7 @@ export function NewHomeStudio() {
     return () => {
       cancelled = true;
     };
-  }, [activeTaskIds]);
+  }, [activeTaskIds, isKvMode]);
 
   useEffect(() => {
     return () => {
@@ -251,15 +317,17 @@ export function NewHomeStudio() {
           URL.revokeObjectURL(item.previewUrl);
         }
       });
+      if (kvLogo?.previewUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(kvLogo.previewUrl);
+      }
     };
-  }, [referenceItems]);
+  }, [referenceItems, kvLogo]);
 
   async function handleLoadMore() {
-    const normalizedKey = apiKey.trim();
-    if (normalizedKey.length < 10 || historyLoading) return;
+    if (historyLoading) return;
 
     setHistoryLoading(true);
-    const nextBatch = await getDirectHistoryAction(normalizedKey, {
+    const nextBatch = await (isKvMode ? getKvHistoryAction : getDirectHistoryAction)({
       offset: historyImages?.length ?? 0,
       limit: HISTORY_PAGE_SIZE,
     });
@@ -325,6 +393,84 @@ export function NewHomeStudio() {
     });
   }
 
+  function applyLogoFile(file: File) {
+    setKvLogo((current) => {
+      if (current?.previewUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(current.previewUrl);
+      }
+      return {
+        id: `${file.name}-${file.size}-${Date.now()}`,
+        label: file.name,
+        previewUrl: URL.createObjectURL(file),
+        file,
+      };
+    });
+  }
+
+  function toggleKvScene(sceneId: string) {
+    setSelectedSceneIds((current) => {
+      if (current.includes(sceneId)) {
+        return current.filter((id) => id !== sceneId);
+      }
+      return [...current, sceneId].sort();
+    });
+  }
+
+  function selectAllKvScenes() {
+    setSelectedSceneIds(KV_SCENES.map((scene) => scene.id));
+  }
+
+  async function analyzeKvAgent() {
+    if (!isKvMode || isAnalyzingKv) return;
+    if (!selectedSceneIds.length) {
+      setSubmitMessage("请至少选择一个场景");
+      return;
+    }
+    if (!referenceItems.some((item) => item.file) && !kvInfo.trim()) {
+      setSubmitMessage("请上传商品图，或填写商品信息");
+      return;
+    }
+
+    setSubmitMessage("");
+    setIsAnalyzingKv(true);
+
+    try {
+      const formData = new FormData();
+      formData.set("brand", kvBrand);
+      formData.set("productInfo", kvInfo);
+      formData.set("extraPrompt", prompt);
+      formData.set("visualStyle", kvVisualStyle);
+      formData.set("typography", kvTypography);
+      selectedSceneIds.forEach((sceneId) => formData.append("sceneIds", sceneId));
+      referenceItems
+        .filter((item) => item.file)
+        .slice(0, 10)
+        .forEach((item) => formData.append("productImages", item.file as File));
+      if (kvLogo?.file) {
+        formData.set("logoImage", kvLogo.file);
+      }
+
+      const response = await fetch("/api/kv/analyze", {
+        method: "POST",
+        body: formData,
+      });
+      const payload = await response.json();
+      const plans = Array.isArray(payload.plans) ? (payload.plans as KvPromptPlan[]) : [];
+      if (!response.ok && !plans.length) {
+        throw new Error(payload?.error || "KV分析失败");
+      }
+      setKvReport(payload.report || "已完成商品识别和场景提示词生成。");
+      setKvPlans(plans.filter((plan) => selectedSceneIds.includes(plan.sceneId)));
+      setSubmitMessage(response.ok ? "分析完成，选择场景后可提交队列" : `主站模型分析失败，已生成基础提示词：${payload?.error || ""}`);
+    } catch (error) {
+      setKvReport("");
+      setKvPlans([]);
+      setSubmitMessage(error instanceof Error ? error.message : "KV分析失败");
+    } finally {
+      setIsAnalyzingKv(false);
+    }
+  }
+
   function handleReusePrompt(nextPrompt?: string) {
     if (!nextPrompt) return;
     setPrompt(nextPrompt);
@@ -333,7 +479,7 @@ export function NewHomeStudio() {
   async function handleDeleteImage(filePath: string) {
     const confirmed = window.confirm("确认删除这张图片吗？");
     if (!confirmed) return;
-    const result = await deleteDirectHistoryItemAction(apiKey, filePath);
+    const result = await deleteDirectHistoryItemAction(filePath);
     if (!result.success) {
       window.alert(result.error || "删除失败");
       return;
@@ -348,7 +494,7 @@ export function NewHomeStudio() {
   async function handleDeleteFailedTask(taskId: string) {
     const confirmed = window.confirm("确认删除这条失败任务吗？");
     if (!confirmed) return;
-    const result = await deleteDirectGenerateTaskAction(apiKey, taskId);
+    const result = await deleteDirectGenerateTaskAction(taskId);
     if (!result.success) {
       window.alert(result.error || "删除失败");
       return;
@@ -358,7 +504,8 @@ export function NewHomeStudio() {
   }
 
   async function handleRetryFailedTask(taskId: string) {
-    const task = await retryDirectGenerateTaskAction(apiKey, taskId);
+    const task = await retryDirectGenerateTaskAction(taskId);
+    void refreshUserOverview();
     if (task.status === "failed" || !task.taskId) {
       setState(taskToGenerateState(task));
       return;
@@ -380,13 +527,11 @@ export function NewHomeStudio() {
     setActiveTaskIds((current) => [...current.filter((id) => id !== taskId), task.taskId as string]);
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function submitGenerateFormData(formData: FormData) {
     setState({});
     setSubmitMessage("");
     setIsSubmitting(true);
 
-    const formData = new FormData(event.currentTarget);
     formData.delete("sourceImagePaths");
     referenceItems
       .filter((item) => item.sourcePath)
@@ -454,6 +599,7 @@ export function NewHomeStudio() {
 
     setIsSubmitting(false);
     setSubmitMessage("已提交，正在生成");
+    void refreshUserOverview();
 
     if (!response.ok || task.status === "failed" || !task.taskId) {
       setState(taskToGenerateState(task));
@@ -487,6 +633,30 @@ export function NewHomeStudio() {
     setActiveTaskIds((current) => [...current, task.taskId as string]);
   }
 
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const baseFormData = new FormData(event.currentTarget);
+
+    if (isKvMode) {
+      if (!selectedKvPlans.length) {
+        setSubmitMessage("请先分析生成KV提示词，再提交队列");
+        return;
+      }
+
+      for (const plan of selectedKvPlans) {
+        const formData = new FormData(event.currentTarget);
+        formData.set("prompt", plan.prompt);
+        formData.set("size", "1024x1792");
+        formData.set("generationStyle", "kv");
+        await submitGenerateFormData(formData);
+      }
+      setSubmitMessage(`已提交 ${selectedKvPlans.length} 个KV场景到队列`);
+      return;
+    }
+
+    await submitGenerateFormData(baseFormData);
+  }
+
   const galleryImages: GalleryItem[] = historyImages?.length ? historyImages : [];
   const filteredImages = galleryImages.filter((image) => {
     const query = searchQuery.trim().toLowerCase();
@@ -495,42 +665,29 @@ export function NewHomeStudio() {
     return searchable.includes(query);
   });
 
-  function handleSaveApiKey() {
-    window.localStorage.setItem(STORAGE_KEY, apiKey.trim());
-    setApiKeySaved(true);
-    window.setTimeout(() => setApiKeySaved(false), 1800);
-  }
-
   return (
-    <main className="new-home-page">
+    <main className={`new-home-page ${isKvMode ? "kv-page" : ""}`}>
       <section className="new-home-shell">
         <header className="new-home-topbar">
           <div className="new-home-topmeta">
             <div className="new-home-brand-wrap">
               <p className="new-home-brand-pill">
-                <span>hema API image</span>
-                <strong>BY GPT-IMAGE-2.0</strong>
+                <Link href="/" className="new-home-brand-link" aria-label="回到 Hemora 首页">Hemora</Link>
+                <strong>{isKvMode ? "KV STUDIO" : "IMAGE STUDIO"}</strong>
               </p>
             </div>
           </div>
 
           <div className="new-home-keybox">
-            <span>API Key</span>
-            <div className="new-home-keyrow">
-              <input
-                name="apiKeyMirror"
-                type="password"
-                placeholder="sk-..."
-                autoComplete="off"
-                value={apiKey}
-                onChange={(event) => {
-                  setApiKey(event.target.value);
-                  setApiKeySaved(false);
-                }}
-              />
-              <button type="button" className="new-home-save-key" onClick={handleSaveApiKey} disabled={apiKey.trim().length < 10}>
-                {apiKeySaved ? "Saved" : "Save"}
-              </button>
+            <div className="new-home-userbox">
+              <a href="/credits" className="new-home-profile-link" aria-label="账户中心">
+                <span className="new-home-user-avatar">{userOverview.displayName.slice(0, 1).toUpperCase()}</span>
+                <span className="new-home-user-name">{userOverview.displayName}</span>
+              </a>
+              <strong>{userOverview.balance} 积分</strong>
+              {userOverview.role === "ADMIN" ? (
+                <a href="/admin/users" className="new-home-admin-link">用户</a>
+              ) : null}
             </div>
           </div>
         </header>
@@ -539,76 +696,251 @@ export function NewHomeStudio() {
           <form className="new-home-form-panel" onSubmit={(event) => void handleSubmit(event)}>
             <div className="new-home-panel-head">
               <div>
-                <p className="new-home-panel-kicker">INPUT</p>
-                <h2 className="new-home-panel-title">直接生成</h2>
+                <p className="new-home-panel-kicker">{isKvMode ? "AGENT INPUT" : "INPUT"}</p>
+                <h2 className="new-home-panel-title">{isKvMode ? "电商KV" : "直接生成"}</h2>
               </div>
+              {isKvMode ? <a href="/studio" className="new-home-mode-link">普通生成</a> : <a href="/kv" className="new-home-mode-link">KV入口</a>}
             </div>
 
-            <input name="apiKey" type="hidden" value={apiKey} readOnly />
+            {isKvMode ? (
+              <>
+                <section className="kv-agent-step">
+                  <p><span />01 商品上传</p>
+                  <label className="kv-upload-tile" htmlFor="new-home-source-image">
+                    <strong>上传商品图</strong>
+                    <em>3~10 张商品/包装图</em>
+                  </label>
+                  <input
+                    ref={fileInputRef}
+                    id="new-home-source-image"
+                    name="sourceImages"
+                    type="file"
+                    accept="image/png,image/jpeg"
+                    multiple
+                    className="direct-file-input"
+                    onChange={(event) => {
+                      const files = Array.from(event.target.files ?? []);
+                      appendReferenceFiles(files);
+                    }}
+                  />
+                </section>
 
-            <label className="new-home-field">
-              <span>提示词</span>
-              <textarea
-                name="prompt"
-                rows={8}
-                placeholder="描述你想要的画面"
-                value={prompt}
-                onChange={(event) => setPrompt(event.target.value)}
-              />
-            </label>
-
-            <div className="new-home-field">
-              <span>参考图</span>
-              <label className="new-home-dropzone" htmlFor="new-home-source-image">
-                <strong>拖拽图片到这里，或点击上传</strong>
-                <em>支持多张参考图</em>
-              </label>
-              <input
-                ref={fileInputRef}
-                id="new-home-source-image"
-                name="sourceImages"
-                type="file"
-                accept="image/png,image/jpeg"
-                multiple
-                className="direct-file-input"
-                onChange={(event) => {
-                  const files = Array.from(event.target.files ?? []);
-                  appendReferenceFiles(files);
-                }}
-              />
-            </div>
-
-            {referenceItems.length ? (
-              <section className="new-home-reference-bar">
-                <div className="new-home-reference-list">
-                  {referenceItems.map((item) => (
-                    <div key={item.id} className="new-home-reference-chip">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={item.previewUrl} alt={item.label} width={40} height={40} className="new-home-reference-thumb" />
-                      <span>{item.label}</span>
-                      <button type="button" onClick={() => removeReferenceItem(item.id)}>
-                        ×
-                      </button>
+                {referenceItems.length ? (
+                  <section className="new-home-reference-bar">
+                    <div className="new-home-reference-list">
+                      {referenceItems.map((item) => (
+                        <div key={item.id} className="new-home-reference-chip">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={item.previewUrl} alt={item.label} width={40} height={40} className="new-home-reference-thumb" />
+                          <span>{item.label}</span>
+                          <button type="button" onClick={() => removeReferenceItem(item.id)}>
+                            ×
+                          </button>
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  </section>
+                ) : null}
+
+                <section className="kv-agent-step">
+                  <p><span />02 商品信息 <b>选填</b></p>
+                  <div className="kv-info-row">
+                    <input
+                      value={kvBrand}
+                      onChange={(event) => setKvBrand(event.target.value)}
+                      placeholder="品牌名称"
+                    />
+                    <label className="kv-logo-upload" htmlFor="kv-logo-image">
+                      Logo
+                    </label>
+                    <input
+                      ref={logoInputRef}
+                      id="kv-logo-image"
+                      type="file"
+                      accept="image/png,image/jpeg"
+                      className="direct-file-input"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        if (file) applyLogoFile(file);
+                      }}
+                    />
+                  </div>
+                  {kvLogo ? <div className="kv-logo-name">{kvLogo.label}</div> : null}
+                  <textarea
+                    value={kvInfo}
+                    onChange={(event) => setKvInfo(event.target.value)}
+                    rows={4}
+                    placeholder="核心卖点/参数"
+                  />
+                </section>
+
+                <section className="kv-agent-step">
+                  <div className="kv-step-head">
+                    <p><span />03 场景规划</p>
+                    <button type="button" onClick={selectAllKvScenes}>一键全选</button>
+                  </div>
+                  <div className="kv-scene-grid">
+                    {KV_SCENES.map((scene) => {
+                      const selected = selectedSceneIds.includes(scene.id);
+                      return (
+                        <button
+                          key={scene.id}
+                          type="button"
+                          className={`kv-scene-card ${selected ? "selected" : ""}`}
+                          onClick={() => toggleKvScene(scene.id)}
+                        >
+                          <strong>{scene.title}</strong>
+                          <em>{scene.description}</em>
+                          <span>{selected ? "✓" : ""}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section className="kv-agent-step">
+                  <p><span />04 视觉与排版</p>
+                  <label className="new-home-field">
+                    <span>KV视觉风格</span>
+                    <select value={kvVisualStyle} onChange={(event) => setKvVisualStyle(event.target.value)}>
+                      <option>AI自动匹配</option>
+                      <option>杂志编辑风格</option>
+                      <option>水彩艺术风格</option>
+                      <option>科技未来风格</option>
+                      <option>复古胶片风格</option>
+                      <option>极简北欧风格</option>
+                      <option>霓虹赛博风格</option>
+                      <option>自然有机风格</option>
+                    </select>
+                  </label>
+                  <label className="new-home-field">
+                    <span>排版细节</span>
+                    <select value={kvTypography} onChange={(event) => setKvTypography(event.target.value)}>
+                      <option>AI自动匹配</option>
+                      <option>粗衬线大标题 + 细线装饰 + 网格对齐</option>
+                      <option>玻璃拟态卡片 + 半透明背景 + 柔和圆角</option>
+                      <option>3D浮雕文字 + 金属质感 + 光影效果</option>
+                      <option>手写体标注 + 水彩笔触 + 不规则布局</option>
+                      <option>无衬线粗体 + 霓虹描边 + 发光效果</option>
+                      <option>极细线条字 + 大量留白 + 精确对齐</option>
+                    </select>
+                  </label>
+                  <label className="new-home-field">
+                    <span>补充要求</span>
+                    <textarea
+                      name="prompt"
+                      rows={4}
+                      placeholder="可写模特、场景、平台、必须包含对比图等要求"
+                      value={prompt}
+                      onChange={(event) => setPrompt(event.target.value)}
+                    />
+                  </label>
+                </section>
+
+                {kvReport ? <pre className="kv-report">{kvReport}</pre> : null}
+                {kvPlans.length ? (
+                  <div className="kv-plan-list">
+                    {kvPlans.map((plan) => (
+                      <button key={plan.sceneId} type="button" onClick={() => setPrompt(plan.prompt)}>
+                        {plan.title}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <label className="new-home-field">
+                  <span>提示词</span>
+                  <textarea
+                    name="prompt"
+                    rows={8}
+                    placeholder="描述你想要的画面"
+                    value={prompt}
+                    onChange={(event) => setPrompt(event.target.value)}
+                  />
+                </label>
+
+                <div className="new-home-field">
+                  <span>参考图</span>
+                  <label className="new-home-dropzone" htmlFor="new-home-source-image">
+                    <strong>拖拽图片到这里，或点击上传</strong>
+                    <em>支持多张参考图</em>
+                  </label>
+                  <input
+                    ref={fileInputRef}
+                    id="new-home-source-image"
+                    name="sourceImages"
+                    type="file"
+                    accept="image/png,image/jpeg"
+                    multiple
+                    className="direct-file-input"
+                    onChange={(event) => {
+                      const files = Array.from(event.target.files ?? []);
+                      appendReferenceFiles(files);
+                    }}
+                  />
                 </div>
-              </section>
-            ) : null}
+
+                {referenceItems.length ? (
+                  <section className="new-home-reference-bar">
+                    <div className="new-home-reference-list">
+                      {referenceItems.map((item) => (
+                        <div key={item.id} className="new-home-reference-chip">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={item.previewUrl} alt={item.label} width={40} height={40} className="new-home-reference-thumb" />
+                          <span>{item.label}</span>
+                          <button type="button" onClick={() => removeReferenceItem(item.id)}>
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+              </>
+            )}
 
             <div className="new-home-form-footer">
-              <label className="new-home-field new-home-field-inline">
+              <div className="new-home-field new-home-size-field">
                 <span>尺寸</span>
-                <select name="size" value={size} onChange={(event) => setSize(event.target.value)}>
+                <input type="hidden" name="size" value={size} readOnly />
+                <div className="new-home-size-options" role="radiogroup" aria-label="生成尺寸">
                   {SIZE_OPTIONS.map((item) => (
-                    <option key={item.label} value={item.label}>
-                      {item.displayName} · {item.label}
-                    </option>
+                    <button
+                      key={item.label}
+                      type="button"
+                      className={`new-home-size-option ${size === item.label ? "selected" : ""}`}
+                      aria-pressed={size === item.label}
+                      onClick={() => setSize(item.label)}
+                      >
+                      <i
+                        className="new-home-size-preview"
+                        style={getSizePreviewStyle(item.label)}
+                        aria-hidden="true"
+                      />
+                      <strong>{item.displayName}</strong>
+                    </button>
                   ))}
-                </select>
-              </label>
+                </div>
+              </div>
 
-              <button className="new-home-generate" type="submit" disabled={isSubmitting || apiKey.trim().length < 10 || prompt.trim().length < 8}>
-                {isSubmitting ? "提交中..." : "立即生成"}
+              {isKvMode ? (
+                <button
+                  type="button"
+                  className="new-home-agent-button"
+                  onClick={() => void analyzeKvAgent()}
+                  disabled={isAnalyzingKv || isSubmitting}
+                >
+                  {isAnalyzingKv ? "分析中..." : "分析生成提示词"}
+                </button>
+              ) : null}
+              <button
+                className="new-home-generate"
+                type="submit"
+                disabled={isSubmitting || (isKvMode ? !selectedKvPlans.length : prompt.trim().length < 8)}
+              >
+                {isSubmitting ? "提交中..." : isKvMode ? `提交 ${selectedKvPlans.length || selectedSceneIds.length} 个场景到队列` : "立即生成"}
               </button>
               {submitMessage ? <p className="new-home-submit-hint">{submitMessage}</p> : null}
             </div>
@@ -617,8 +949,8 @@ export function NewHomeStudio() {
           <section ref={resultPanelRef} className="new-home-result-panel">
             <div className="new-home-panel-head">
               <div>
-                <p className="new-home-panel-kicker">RESULT</p>
-                <h2 className="new-home-panel-title">生成结果</h2>
+                <p className="new-home-panel-kicker">{isKvMode ? "QUEUE OUTPUT" : "RESULT"}</p>
+                <h2 className="new-home-panel-title">{isKvMode ? "KV队列" : "生成结果"}</h2>
               </div>
               <div className="new-home-history-pill">
                 <span>HISTORY</span>
@@ -629,7 +961,7 @@ export function NewHomeStudio() {
             <div className="new-home-panel-toolbar">
               <input
                 className="new-home-search-input"
-                placeholder="搜索历史图片"
+                placeholder={isKvMode ? "搜索KV历史图片" : "搜索历史图片"}
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
               />
@@ -680,7 +1012,7 @@ export function NewHomeStudio() {
                                 aria-label="重试"
                                 title="重试"
                               >
-                                ↻
+                                <span aria-hidden="true">↻</span>
                               </button>
                               <button
                                 type="button"
@@ -689,7 +1021,7 @@ export function NewHomeStudio() {
                                 aria-label="删除"
                                 title="删除"
                               >
-                                🗑
+                                <span aria-hidden="true">⌫</span>
                               </button>
                             </div>
                           </>
@@ -727,9 +1059,14 @@ export function NewHomeStudio() {
                         title="下载"
                         onClick={(event) => event.stopPropagation()}
                       >
-                        ↓
+                        <span aria-hidden="true">⇩</span>
                       </a>
+                      <div className="new-home-image-meta">
+                        <span>{image.size || `${image.width}x${image.height}`}</span>
+                        {image.createdAt ? <span>{formatHistoryDate(image.createdAt)}</span> : null}
+                      </div>
                       <div className="new-home-history-body">
+                        {image.prompt ? <p className="new-home-card-prompt">{image.prompt}</p> : null}
                         <div className="new-home-history-actions">
                           <button
                             type="button"
@@ -738,7 +1075,7 @@ export function NewHomeStudio() {
                             aria-label="重试"
                             title="重试"
                           >
-                            ↻
+                            <span aria-hidden="true">↻</span>
                           </button>
                           <button
                             type="button"
@@ -747,7 +1084,7 @@ export function NewHomeStudio() {
                             aria-label="复用"
                             title="复用"
                           >
-                            ↶
+                            <span aria-hidden="true">↩</span>
                           </button>
                           <button
                             type="button"
@@ -756,7 +1093,7 @@ export function NewHomeStudio() {
                             aria-label="继续编辑"
                             title="继续编辑"
                           >
-                            ✎
+                            <span aria-hidden="true">✎</span>
                           </button>
                           <button
                             type="button"
@@ -765,7 +1102,7 @@ export function NewHomeStudio() {
                             aria-label="删除"
                             title="删除"
                           >
-                            🗑
+                            <span aria-hidden="true">⌫</span>
                           </button>
                         </div>
                       </div>
@@ -806,7 +1143,7 @@ export function NewHomeStudio() {
               title="下载"
               onClick={(event) => event.stopPropagation()}
             >
-              ↓
+              D
             </a>
             <div className="new-home-lightbox-image-wrap" onClick={(event) => event.stopPropagation()}>
               <Image

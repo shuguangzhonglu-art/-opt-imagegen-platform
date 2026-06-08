@@ -149,7 +149,7 @@ export function NewHomeStudio() {
       }
 
       setHistoryLoading(true);
-      const history = await getDirectHistoryAction(normalizedKey, {
+      const history = await getDirectHistoryAction({
         offset: 0,
         limit: HISTORY_PAGE_SIZE,
       });
@@ -217,7 +217,7 @@ export function NewHomeStudio() {
     if (normalizedKey.length < 10 || historyLoading) return;
 
     setHistoryLoading(true);
-    const nextBatch = await getDirectHistoryAction(normalizedKey, {
+    const nextBatch = await getDirectHistoryAction({
       offset: historyImages?.length ?? 0,
       limit: HISTORY_PAGE_SIZE,
     });
@@ -291,7 +291,7 @@ export function NewHomeStudio() {
   async function handleDeleteImage(filePath: string) {
     const confirmed = window.confirm("确认删除这张图片吗？");
     if (!confirmed) return;
-    const result = await deleteDirectHistoryItemAction(apiKey, filePath);
+    const result = await deleteDirectHistoryItemAction(filePath);
     if (!result.success) {
       window.alert(result.error || "删除失败");
       return;
@@ -355,8 +355,8 @@ export function NewHomeStudio() {
           <div className="new-home-topmeta">
             <div className="new-home-brand-wrap">
               <p className="new-home-brand-pill">
-                <span>hema API image</span>
-                <strong>by GPT-IMAGE-2.0</strong>
+                <span>Hemora</span>
+                <strong>IMAGE STUDIO</strong>
               </p>
             </div>
           </div>

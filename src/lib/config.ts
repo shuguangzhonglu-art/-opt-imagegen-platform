@@ -14,6 +14,18 @@ export type PlatformConfig = {
   taskConcurrency: number;
   fileRetentionDays: number;
   signupBonus: number;
+  emailVerificationEnabled: boolean;
+  smtpHost: string;
+  smtpPort: number;
+  smtpUser: string;
+  smtpPassword: string;
+  smtpFrom: string;
+  turnstileEnabled: boolean;
+  turnstileSiteKey: string;
+  turnstileSecretKey: string;
+  registerRateLimitEnabled: boolean;
+  registerRateLimitWindowMinutes: number;
+  registerRateLimitMax: number;
 };
 
 const DEFAULT_SIZES = "1024x1024:40,1024x1536:60,1536x1024:60,1024x1792:80,1792x1024:80";
@@ -50,6 +62,18 @@ export async function getPlatformConfig(): Promise<PlatformConfig> {
       taskConcurrency: 1,
       fileRetentionDays: 30,
       signupBonus: 200,
+      emailVerificationEnabled: true,
+      smtpHost: "",
+      smtpPort: 587,
+      smtpUser: "",
+      smtpPassword: "",
+      smtpFrom: "",
+      turnstileEnabled: false,
+      turnstileSiteKey: "",
+      turnstileSecretKey: "",
+      registerRateLimitEnabled: true,
+      registerRateLimitWindowMinutes: 60,
+      registerRateLimitMax: 5,
     };
   }
 
@@ -59,6 +83,18 @@ export async function getPlatformConfig(): Promise<PlatformConfig> {
     taskConcurrency: settings.taskConcurrency,
     fileRetentionDays: settings.fileRetentionDays,
     signupBonus: settings.signupBonus,
+    emailVerificationEnabled: settings.emailVerificationEnabled,
+    smtpHost: settings.smtpHost,
+    smtpPort: settings.smtpPort,
+    smtpUser: settings.smtpUser,
+    smtpPassword: settings.smtpPassword,
+    smtpFrom: settings.smtpFrom,
+    turnstileEnabled: settings.turnstileEnabled,
+    turnstileSiteKey: settings.turnstileSiteKey,
+    turnstileSecretKey: settings.turnstileSecretKey,
+    registerRateLimitEnabled: settings.registerRateLimitEnabled,
+    registerRateLimitWindowMinutes: settings.registerRateLimitWindowMinutes,
+    registerRateLimitMax: settings.registerRateLimitMax,
   };
 }
 

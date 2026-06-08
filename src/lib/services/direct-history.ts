@@ -43,6 +43,10 @@ export function hashUserApiKey(apiKey: string) {
     .digest("hex");
 }
 
+export function directUserHistoryKey(userId: string) {
+  return `user:${userId}`;
+}
+
 export async function saveDirectHistory(params: {
   apiKey: string;
   prompt: string;
@@ -63,6 +67,35 @@ export async function saveDirectHistory(params: {
   await directImageRecord.createMany({
     data: params.images.map((image) => ({
       userKeyHash,
+      prompt: params.prompt,
+      size: params.size,
+      filePath: image.filePath,
+      width: image.width,
+      height: image.height,
+      sourceImagePath: params.sourceImagePath,
+    })),
+  });
+}
+
+export async function saveDirectHistoryForUser(params: {
+  userId: string;
+  prompt: string;
+  size: string;
+  sourceImagePath?: string;
+  images: Array<{
+    filePath: string;
+    width: number;
+    height: number;
+  }>;
+}) {
+  const directImageRecord = getDirectImageRecordModel();
+  if (!directImageRecord) {
+    return;
+  }
+
+  await directImageRecord.createMany({
+    data: params.images.map((image) => ({
+      userKeyHash: directUserHistoryKey(params.userId),
       prompt: params.prompt,
       size: params.size,
       filePath: image.filePath,
@@ -100,6 +133,32 @@ export async function getDirectHistoryByApiKey(
   }));
 }
 
+export async function getDirectHistoryByUserId(
+  userId: string,
+  options?: { offset?: number; limit?: number },
+): Promise<DirectHistoryImage[]> {
+  const directImageRecord = getDirectImageRecordModel();
+  if (!directImageRecord) {
+    return [];
+  }
+
+  const records = await directImageRecord.findMany({
+    where: { userKeyHash: directUserHistoryKey(userId) },
+    orderBy: { createdAt: "desc" },
+    skip: options?.offset ?? 0,
+    take: options?.limit ?? DIRECT_HISTORY_PAGE_SIZE,
+  });
+
+  return records.map((record) => ({
+    filePath: normalizeStoredImageUrl(record.filePath),
+    width: record.width,
+    height: record.height,
+    prompt: record.prompt,
+    size: record.size,
+    createdAt: record.createdAt.toISOString(),
+  }));
+}
+
 export async function deleteDirectHistoryByFilePath(apiKey: string, filePath: string) {
   const directImageRecord = getDirectImageRecordModel();
   if (!directImageRecord) {
@@ -110,6 +169,22 @@ export async function deleteDirectHistoryByFilePath(apiKey: string, filePath: st
   const result = await directImageRecord.deleteMany({
     where: {
       userKeyHash,
+      filePath,
+    },
+  });
+
+  return result.count;
+}
+
+export async function deleteDirectHistoryByUserIdAndFilePath(userId: string, filePath: string) {
+  const directImageRecord = getDirectImageRecordModel();
+  if (!directImageRecord) {
+    return 0;
+  }
+
+  const result = await directImageRecord.deleteMany({
+    where: {
+      userKeyHash: directUserHistoryKey(userId),
       filePath,
     },
   });

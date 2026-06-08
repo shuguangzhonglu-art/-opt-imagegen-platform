@@ -1,19 +1,20 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-
 import {
   DIRECT_HISTORY_PAGE_SIZE,
-  getDirectHistoryByApiKey,
-  hashUserApiKey,
-  saveDirectHistory,
+  getDirectHistoryByUserId,
+  saveDirectHistoryForUser,
   type DirectHistoryImage,
 } from "@/lib/services/direct-history";
+import { getPlatformConfig, getSizeCost } from "@/lib/config";
+import { prisma } from "@/lib/db";
+import { enqueueDirectGenerateTask } from "@/lib/queue";
 import {
-  generateImagesWithUserConfig,
+  generateImages,
   saveUploadedReferenceImage,
 } from "@/lib/services/image-provider";
 import { appendDirectImageLog } from "@/lib/services/direct-log";
 import { normalizeStoredImageUrl } from "@/lib/services/object-storage";
+
+export type DirectGenerateStyle = "direct" | "kv";
 
 export type DirectTaskStatus = "pending" | "running" | "succeeded" | "failed";
 
@@ -39,90 +40,93 @@ export type DirectGenerateTaskState = {
   };
 };
 
-type DirectTaskRecord = DirectGenerateTaskState & {
-  createdAt: number;
-  userKeyHash: string;
-  apiKey?: string;
-  sourceFilePaths?: string[];
-};
-
-const TASK_DIR = path.join(process.cwd(), "public", "generated", "tasks");
-const TASK_TTL_MS = 30 * 60 * 1000;
-
-declare global {
-  var __directWorkerStarted: boolean | undefined;
-  var __directWorkerProcessing: boolean | undefined;
+function toDirectStatus(status: string): DirectTaskStatus {
+  if (status === "RUNNING") return "running";
+  if (status === "SUCCESS") return "succeeded";
+  if (status === "FAILED") return "failed";
+  return "pending";
 }
 
-function createTaskId() {
-  return `task-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function getTaskPath(taskId: string) {
-  return path.join(TASK_DIR, `${taskId}.json`);
-}
-
-async function ensureTaskDir() {
-  await fs.mkdir(TASK_DIR, { recursive: true });
-}
-
-async function writeTask(task: DirectTaskRecord) {
-  await ensureTaskDir();
-  await fs.writeFile(getTaskPath(task.taskId || "unknown"), JSON.stringify(task), "utf8");
-}
-
-async function readTask(taskId: string): Promise<DirectTaskRecord | null> {
+function parseSourceImagePaths(value?: string | null, fallback?: string | null) {
+  if (!value) return fallback ? [fallback] : [];
   try {
-    const content = await fs.readFile(getTaskPath(taskId), "utf8");
-    return JSON.parse(content) as DirectTaskRecord;
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : [];
   } catch {
-    return null;
+    return fallback ? [fallback] : [];
   }
 }
 
-async function deleteTaskFile(taskId: string) {
-  try {
-    await fs.unlink(getTaskPath(taskId));
-    return true;
-  } catch {
-    return false;
-  }
+function getElapsedMs(task: { startedAt?: Date | null; finishedAt?: Date | null }) {
+  if (!task.startedAt) return undefined;
+  return (task.finishedAt ?? new Date()).getTime() - task.startedAt.getTime();
 }
 
-async function cleanupDirectTasks() {
-  await ensureTaskDir();
-  const entries = await fs.readdir(TASK_DIR, { withFileTypes: true });
-  const expiresAt = Date.now() - TASK_TTL_MS;
+async function taskToState(taskId: string, userId?: string): Promise<DirectGenerateTaskState> {
+  const task = await prisma.generationTask.findFirst({
+    where: {
+      id: taskId,
+      ...(userId ? { userId } : {}),
+    },
+    include: {
+      images: {
+        orderBy: { createdAt: "asc" },
+      },
+    },
+  });
 
-  await Promise.all(
-    entries
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-      .map(async (entry) => {
-        const filePath = path.join(TASK_DIR, entry.name);
-        try {
-          const stat = await fs.stat(filePath);
-          if (stat.mtimeMs < expiresAt) {
-            await fs.unlink(filePath);
-          }
-        } catch {
-          return;
-        }
-      }),
-  );
+  if (!task) {
+    return {
+      taskId,
+      status: "failed",
+      error: "生成任务不存在",
+    };
+  }
+
+  const sourceImagePaths = parseSourceImagePaths(task.sourceImagePaths, task.sourceImagePath);
+  const images = task.images.map((image) => ({
+    filePath: normalizeStoredImageUrl(image.filePath),
+    width: image.width,
+    height: image.height,
+  }));
+  const history =
+    task.status === "SUCCESS"
+      ? await getDirectHistoryByUserId(task.userId, {
+          offset: 0,
+          limit: DIRECT_HISTORY_PAGE_SIZE,
+        })
+      : undefined;
+
+  return {
+    taskId: task.id,
+    status: toDirectStatus(task.status),
+    error: task.errorMessage ?? undefined,
+    rawError: task.rawError ?? undefined,
+    success: task.status === "SUCCESS" ? `生成完成，共 ${images.length} 张` : undefined,
+    createdAt: task.requestedAt.getTime(),
+    history,
+    images,
+    elapsedMs: getElapsedMs(task),
+    submitted: {
+      prompt: task.prompt,
+      size: task.size,
+      sourceImagePath: task.sourceImagePath ?? sourceImagePaths[0],
+      sourceImagePaths,
+    },
+  };
 }
 
 export async function startDirectGenerateTask(params: {
-  apiKey: string;
+  userId: string;
   prompt: string;
   size: string;
+  generationStyle?: DirectGenerateStyle;
   sourceImagePath?: string;
   sourceImagePaths?: string[];
   sourceFiles?: File[];
 }): Promise<DirectGenerateTaskState> {
-  await cleanupDirectTasks();
-
-  const taskId = createTaskId();
-  const userKeyHash = hashUserApiKey(params.apiKey);
+  const config = await getPlatformConfig();
+  const cost = getSizeCost(config, params.size);
   const uploadedSourceImages = params.sourceFiles?.length
     ? await Promise.all(
         params.sourceFiles
@@ -134,13 +138,115 @@ export async function startDirectGenerateTask(params: {
     ...(params.sourceImagePaths ?? (params.sourceImagePath ? [params.sourceImagePath] : [])),
     ...uploadedSourceImages.map((image) => image.filePath),
   ];
-  const baseTask: DirectTaskRecord = {
-    taskId,
+
+  const created = await prisma.$transaction(async (tx) => {
+    const runningCount = await tx.generationTask.count({
+      where: {
+        userId: params.userId,
+        status: { in: ["PENDING", "RUNNING"] },
+      },
+    });
+    const userPendingLimit = Number(process.env.USER_PENDING_LIMIT ?? 20);
+    if (runningCount >= userPendingLimit) {
+      throw new Error(`排队任务过多，请等待当前任务完成后再提交`);
+    }
+
+    const wallet = await tx.wallet.findUnique({ where: { userId: params.userId } });
+    if (!wallet) throw new Error("钱包不存在");
+
+    const task = await tx.generationTask.create({
+      data: {
+        userId: params.userId,
+        prompt: params.prompt,
+        sourceImagePath: resolvedSourceImagePaths[0],
+        sourceImagePaths: JSON.stringify(resolvedSourceImagePaths),
+        style: params.generationStyle || "direct",
+        size: params.size,
+        quantity: 1,
+        quality: "standard",
+        unitCost: cost,
+        totalCost: cost,
+        status: "PENDING",
+        queuedAt: new Date(),
+      },
+    });
+
+    const debit = await tx.wallet.updateMany({
+      where: {
+        userId: params.userId,
+        balance: { gte: cost },
+      },
+      data: {
+        balance: { decrement: cost },
+      },
+    });
+
+    if (debit.count !== 1) {
+      throw new Error(`余额不足，需要 ${cost} 积分`);
+    }
+
+    const updatedWallet = await tx.wallet.findUniqueOrThrow({ where: { userId: params.userId } });
+    await tx.creditTransaction.create({
+      data: {
+        userId: params.userId,
+        type: "GENERATION_DEBIT",
+        amount: -cost,
+        balanceAfter: updatedWallet.balance,
+        relatedTaskId: task.id,
+        note: `图片生成 ${params.size}`,
+      },
+    });
+
+    return task;
+  });
+
+  try {
+    const job = await enqueueDirectGenerateTask(created.id);
+    await prisma.generationTask.update({
+      where: { id: created.id },
+      data: { queueJobId: String(job.id ?? created.id) },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "队列提交失败";
+    await prisma.$transaction(async (tx) => {
+      const wallet = await tx.wallet.update({
+        where: { userId: params.userId },
+        data: { balance: { increment: cost } },
+      });
+      await tx.creditTransaction.create({
+        data: {
+          userId: params.userId,
+          type: "GENERATION_REFUND",
+          amount: cost,
+          balanceAfter: wallet.balance,
+          relatedTaskId: created.id,
+          note: "任务入队失败，自动返还积分",
+        },
+      });
+      await tx.generationTask.update({
+        where: { id: created.id },
+        data: {
+          status: "FAILED",
+          finishedAt: new Date(),
+          errorMessage: "任务队列暂不可用，请稍后重试",
+          rawError: message,
+        },
+      });
+    });
+    throw new Error("任务队列暂不可用，请稍后重试");
+  }
+
+  await appendDirectImageLog("task.created", {
+    taskId: created.id,
+    size: params.size,
+    hasSourceImages: resolvedSourceImagePaths.length > 0,
+    promptLength: params.prompt.length,
+  });
+
+  return {
+    taskId: created.id,
     status: "pending",
-    createdAt: Date.now(),
-    userKeyHash,
-    apiKey: params.apiKey,
-    sourceFilePaths: resolvedSourceImagePaths,
+    createdAt: created.requestedAt.getTime(),
     submitted: {
       prompt: params.prompt,
       size: params.size,
@@ -148,102 +254,79 @@ export async function startDirectGenerateTask(params: {
       sourceImagePaths: resolvedSourceImagePaths,
     },
   };
-
-  await writeTask(baseTask);
-  await appendDirectImageLog("task.created", {
-    taskId,
-    size: params.size,
-    hasSourceImages: resolvedSourceImagePaths.length > 0,
-    promptLength: params.prompt.length,
-  });
-
-  void processNextDirectGenerateTask().catch((error) => {
-    console.error("direct-task-start", error);
-  });
-
-  return {
-    taskId,
-    status: "pending",
-    createdAt: baseTask.createdAt,
-    submitted: baseTask.submitted,
-  };
 }
 
-async function processDirectTask(task: DirectTaskRecord) {
+export async function processDirectGenerateTaskById(taskId: string) {
+  const task = await prisma.generationTask.findUnique({ where: { id: taskId } });
+  if (!task) return;
+  if (task.status === "SUCCESS") return;
+
+  const sourceImagePaths = parseSourceImagePaths(task.sourceImagePaths, task.sourceImagePath);
+  const sourceImagePath = sourceImagePaths[0] || task.sourceImagePath || undefined;
   const started = Date.now();
-  const sourceImagePaths = task.sourceFilePaths ?? task.submitted?.sourceImagePaths ?? [];
-  const sourceImagePath = sourceImagePaths[0] || task.submitted?.sourceImagePath;
-  const apiKey = task.apiKey;
 
-  if (!apiKey || !task.taskId || !task.submitted?.prompt || !task.submitted.size) {
-    await writeTask({
-      ...task,
-      status: "failed",
-      error: "任务缺少必要参数，无法执行",
-    });
-    return;
-  }
-
-  await writeTask({
-    ...task,
-    status: "running",
-    error: undefined,
-    rawError: undefined,
+  const claimed = await prisma.generationTask.updateMany({
+    where: { id: task.id, status: "PENDING" },
+    data: {
+      status: "RUNNING",
+      startedAt: new Date(),
+      errorMessage: null,
+      rawError: null,
+    },
   });
+
+  if (claimed.count === 0) return;
+
   await appendDirectImageLog("task.running", {
-    taskId: task.taskId,
-    size: task.submitted.size,
+    taskId: task.id,
+    size: task.size,
     hasSourceImages: sourceImagePaths.length > 0,
-    promptLength: task.submitted.prompt.length,
+    promptLength: task.prompt.length,
   });
 
   try {
-    const images = await generateImagesWithUserConfig(
-      {
-        prompt: task.submitted.prompt,
-        sourceImagePath,
-        sourceImagePaths,
-        background: "auto",
-        size: task.submitted.size,
-        quantity: 1,
-      },
-      {
-        apiKey,
-        baseURL: "https://hemasir.online/v1",
-        model: "gpt-image-2",
-        wireApi: "images",
-      },
-    );
+    const images = await generateImages({
+      prompt: task.prompt,
+      sourceImagePath,
+      sourceImagePaths,
+      style: task.style,
+      quality: task.quality,
+      size: task.size,
+      quantity: task.quantity,
+      taskId: task.id,
+    });
 
-    await saveDirectHistory({
-      apiKey,
-      prompt: task.submitted.prompt,
-      size: task.submitted.size,
+    await saveDirectHistoryForUser({
+      userId: task.userId,
+      prompt: task.prompt,
+      size: task.size,
       sourceImagePath,
       images,
     });
 
-    const history = await getDirectHistoryByApiKey(apiKey, {
-      offset: 0,
-      limit: DIRECT_HISTORY_PAGE_SIZE,
+    await prisma.$transaction(async (tx) => {
+      await tx.generatedImage.createMany({
+        data: images.map((image) => ({
+          taskId: task.id,
+          userId: task.userId,
+          filePath: image.filePath,
+          width: image.width,
+          height: image.height,
+        })),
+      });
+      await tx.generationTask.update({
+        where: { id: task.id },
+        data: {
+          status: "SUCCESS",
+          finishedAt: new Date(),
+          errorMessage: null,
+          rawError: null,
+        },
+      });
     });
 
-    await writeTask({
-      ...task,
-      status: "succeeded",
-      success: `生成完成，共 ${images.length} 张`,
-      elapsedMs: Date.now() - started,
-      images,
-      history,
-      submitted: {
-        prompt: task.submitted.prompt,
-        size: task.submitted.size,
-        sourceImagePath,
-        sourceImagePaths,
-      },
-    });
     await appendDirectImageLog("task.succeeded", {
-      taskId: task.taskId,
+      taskId: task.id,
       elapsedMs: Date.now() - started,
       imageCount: images.length,
       images: images.map((image) => image.filePath),
@@ -253,20 +336,36 @@ async function processDirectTask(task: DirectTaskRecord) {
       error instanceof Error && "rawPayload" in error
         ? String((error as Error & { rawPayload?: unknown }).rawPayload ?? "")
         : undefined;
-    await writeTask({
-      ...task,
-      status: "failed",
-      error: error instanceof Error ? error.message : "生成失败",
-      rawError,
-      submitted: {
-        prompt: task.submitted.prompt,
-        size: task.submitted.size,
-        sourceImagePath,
-        sourceImagePaths,
-      },
+
+    await prisma.$transaction(async (tx) => {
+      const wallet = await tx.wallet.update({
+        where: { userId: task.userId },
+        data: { balance: { increment: task.totalCost } },
+      });
+      await tx.creditTransaction.create({
+        data: {
+          userId: task.userId,
+          type: "GENERATION_REFUND",
+          amount: task.totalCost,
+          balanceAfter: wallet.balance,
+          relatedTaskId: task.id,
+          note: "任务失败，自动返还积分",
+        },
+      });
+      await tx.generationTask.update({
+        where: { id: task.id },
+        data: {
+          status: "FAILED",
+          finishedAt: new Date(),
+          retryCount: { increment: 1 },
+          errorMessage: error instanceof Error ? error.message : "生成失败",
+          rawError,
+        },
+      });
     });
+
     await appendDirectImageLog("task.failed", {
-      taskId: task.taskId,
+      taskId: task.id,
       elapsedMs: Date.now() - started,
       error: error instanceof Error ? error.message : String(error),
       rawError,
@@ -274,160 +373,113 @@ async function processDirectTask(task: DirectTaskRecord) {
   }
 }
 
+export async function recoverStaleDirectTasks() {
+  const staleBefore = new Date(Date.now() - Number(process.env.DIRECT_STALE_TASK_MS ?? 15 * 60 * 1000));
+  const recovered = await prisma.generationTask.updateMany({
+    where: {
+      status: "RUNNING",
+      startedAt: { lt: staleBefore },
+    },
+    data: {
+      status: "PENDING",
+      errorMessage: "Worker 重启后自动恢复队列",
+      startedAt: null,
+      finishedAt: null,
+    },
+  });
+
+  const tasks = await prisma.generationTask.findMany({
+    where: { status: "PENDING" },
+    select: { id: true },
+  });
+  await Promise.all(tasks.map((task) => enqueueDirectGenerateTask(task.id).catch(() => null)));
+
+  return recovered.count;
+}
+
 export async function processNextDirectGenerateTask() {
-  await cleanupDirectTasks();
-  await ensureTaskDir();
-
-  if (global.__directWorkerProcessing) return;
-  global.__directWorkerProcessing = true;
-
-  try {
-    const entries = await fs.readdir(TASK_DIR, { withFileTypes: true });
-    const tasks = await Promise.all(
-      entries
-        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-        .map(async (entry) => readTask(entry.name.replace(/\.json$/, ""))),
-    );
-
-    const nextTask = tasks
-      .filter((task): task is DirectTaskRecord => Boolean(task))
-      .filter((task) => task.status === "pending")
-      .sort((a, b) => a.createdAt - b.createdAt)[0];
-
-    if (!nextTask) return;
-    await processDirectTask(nextTask);
-  } finally {
-    global.__directWorkerProcessing = false;
-  }
+  return null;
 }
 
 export function startDirectTaskWorker() {
-  if (global.__directWorkerStarted) return;
-  global.__directWorkerStarted = true;
+  return;
+}
 
-  const intervalMs = Number(process.env.DIRECT_TASK_POLL_MS ?? 1500);
-  void processNextDirectGenerateTask().catch((error) => {
-    console.error("direct-task-worker", error);
+export async function getDirectGenerateTask(
+  taskId: string,
+  userId?: string,
+): Promise<DirectGenerateTaskState> {
+  return taskToState(taskId, userId);
+}
+
+export async function getDirectGenerateTasksByUserId(
+  userId: string,
+  options?: { includeFinished?: boolean; limit?: number; generationStyle?: DirectGenerateStyle },
+): Promise<DirectGenerateTaskState[]> {
+  const tasks = await prisma.generationTask.findMany({
+    where: {
+      userId,
+      ...(options?.generationStyle ? { style: options.generationStyle } : {}),
+      ...(options?.includeFinished
+        ? {}
+        : {
+            status: { in: ["PENDING", "RUNNING", "FAILED"] },
+          }),
+    },
+    orderBy: { requestedAt: "desc" },
+    take: options?.limit ?? 20,
   });
 
-  setInterval(async () => {
-    try {
-      await processNextDirectGenerateTask();
-    } catch (error) {
-      console.error("direct-task-worker", error);
-    }
-  }, intervalMs).unref();
+  return Promise.all(tasks.map((task) => taskToState(task.id, userId)));
 }
 
-export async function getDirectGenerateTask(taskId: string): Promise<DirectGenerateTaskState> {
-  await cleanupDirectTasks();
-
-  const task = await readTask(taskId);
+export async function deleteDirectGenerateTask(userId: string, taskId: string) {
+  const task = await prisma.generationTask.findUnique({
+    where: { id: taskId },
+    select: { id: true, userId: true, status: true },
+  });
   if (!task) {
-    return {
-      taskId,
-      status: "failed",
-      error: "生成任务已过期，请重新提交",
-    };
+    return { success: false, error: "任务不存在" };
   }
-
-  return {
-    ...task,
-    images: task.images?.map((image) => ({
-      ...image,
-      filePath: normalizeStoredImageUrl(image.filePath),
-    })),
-    history: task.history?.map((image) => ({
-      ...image,
-      filePath: normalizeStoredImageUrl(image.filePath),
-    })),
-  };
-}
-
-export async function getDirectGenerateTasksByApiKey(
-  apiKey: string,
-  options?: { includeFinished?: boolean; limit?: number },
-): Promise<DirectGenerateTaskState[]> {
-  await cleanupDirectTasks();
-  await ensureTaskDir();
-
-  const userKeyHash = hashUserApiKey(apiKey);
-  const entries = await fs.readdir(TASK_DIR, { withFileTypes: true });
-  const tasks = await Promise.all(
-    entries
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-      .map(async (entry) => readTask(entry.name.replace(/\.json$/, ""))),
-  );
-
-  return tasks
-    .filter((task): task is DirectTaskRecord => Boolean(task))
-    .filter((task) => task.userKeyHash === userKeyHash)
-    .filter((task) =>
-      options?.includeFinished ? true : task.status === "pending" || task.status === "running" || task.status === "failed",
-    )
-    .sort((a, b) => b.createdAt - a.createdAt)
-    .slice(0, options?.limit ?? 20)
-    .map((task) => ({
-      taskId: task.taskId,
-      status: task.status,
-      error: task.error,
-      success: task.success,
-      createdAt: task.createdAt,
-      history: task.history,
-      images: task.images,
-      elapsedMs: task.elapsedMs,
-      submitted: task.submitted,
-    }));
-}
-
-export async function deleteDirectGenerateTask(apiKey: string, taskId: string) {
-  await cleanupDirectTasks();
-  const task = await readTask(taskId);
-  if (!task) {
-    return { success: false, error: "任务不存在或已过期" };
-  }
-
-  const userKeyHash = hashUserApiKey(apiKey);
-  if (task.userKeyHash !== userKeyHash) {
+  if (task.userId !== userId) {
     return { success: false, error: "无权删除该任务" };
   }
+  if (task.status === "RUNNING") {
+    return { success: false, error: "运行中的任务不能删除" };
+  }
 
-  const deleted = await deleteTaskFile(taskId);
-  return deleted ? { success: true } : { success: false, error: "删除失败" };
+  await prisma.generationTask.delete({ where: { id: taskId } });
+  return { success: true };
 }
 
-export async function retryDirectGenerateTask(apiKey: string, taskId: string): Promise<DirectGenerateTaskState> {
-  await cleanupDirectTasks();
-  const task = await readTask(taskId);
+export async function retryDirectGenerateTask(
+  taskId: string,
+  userId: string,
+): Promise<DirectGenerateTaskState> {
+  const task = await prisma.generationTask.findUnique({ where: { id: taskId } });
   if (!task) {
     return {
       status: "failed",
-      error: "任务不存在或已过期",
+      error: "任务不存在",
     };
   }
-
-  const userKeyHash = hashUserApiKey(apiKey);
-  if (task.userKeyHash !== userKeyHash) {
+  if (task.userId !== userId) {
     return {
       status: "failed",
       error: "无权重试该任务",
     };
   }
-
-  const submitted = task.submitted;
-  if (!submitted?.prompt || !submitted.size) {
-    return {
-      status: "failed",
-      error: "缺少重试所需的任务参数",
-    };
+  if (task.status !== "FAILED") {
+    return taskToState(task.id);
   }
 
   return startDirectGenerateTask({
-    apiKey,
-    prompt: submitted.prompt,
-    size: submitted.size,
-    sourceImagePath: submitted.sourceImagePath,
-    sourceImagePaths: submitted.sourceImagePaths,
+    userId,
+    prompt: task.prompt,
+    size: task.size,
+    sourceImagePath: task.sourceImagePath ?? undefined,
+    sourceImagePaths: parseSourceImagePaths(task.sourceImagePaths, task.sourceImagePath),
+    generationStyle: task.style === "kv" ? "kv" : "direct",
     sourceFiles: [],
   });
 }

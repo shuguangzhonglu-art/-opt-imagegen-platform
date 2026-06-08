@@ -1,89 +1,83 @@
 # HEMA API Image
 
-极简 BYOK 图片生成站。
+图片生成运营站。
 
-当前项目只保留：
+当前架构：
 
-- 用户自己填写 API Key
-- 文生图
-- 多参考图上传
-- 流式 `gpt-image-2` 生成
-- 本地图片保存
-- 按用户 API Key 哈希读取历史图片
-
-当前项目不包含：
-
-- 登录系统
-- 积分系统
-- 兑换码
-- 管理后台
-- 用户中心
-- SaaS 任务队列后台
+- Next.js Web：登录、画布、后台、兑换券
+- Postgres：用户、钱包、积分流水、任务、图片记录
+- Redis/BullMQ：生成任务队列
+- 独立 Worker：调用上游图片 API，写入结果
+- R2/Object Storage：推荐保存生成图片
 
 ## 本地开发
+
+需要本地 Postgres 和 Redis。
 
 ```bash
 npm install
 npx prisma generate
 npx prisma db push
-npm run dev
+npm run build
+```
+
+启动本地完整服务：
+
+```bash
+npm run start:local
+```
+
+如果只启动 Web，生成任务会进入队列但不会被消费，页面会一直显示生成中。也可以手动拆成两条命令：
+
+```bash
+PORT=4320 npm run start
+npm run worker:direct
 ```
 
 访问：
 
 ```text
-http://localhost:3000
-http://localhost:3000/new-home
+http://127.0.0.1:4320
+```
+
+默认管理员：
+
+```text
+admin@flux.local
+admin123456
 ```
 
 ## 环境变量
 
-```env
-DATABASE_URL="file:/private/tmp/imagegen-platform-dev.db"
+参考：
 
-OPENAI_API_KEY=""
-OPENAI_BASE_URL="https://hemasir.online/v1"
-OPENAI_IMAGE_MODEL="gpt-image-2"
-OPENAI_FALLBACK_IMAGE_MODEL="gpt-image-2"
-OPENAI_WIRE_API="images"
-OPENAI_REQUEST_TIMEOUT_MS="300000"
-OPENAI_RESPONSES_POLL_TIMEOUT_MS="300000"
+```text
+.env.example
+deploy/production.env.example
 ```
 
-`OPENAI_API_KEY` 默认留空。用户在页面里填写自己的 Key。
+关键项：
+
+```env
+DATABASE_URL="postgresql://imagegen:imagegen@127.0.0.1:5432/imagegen"
+REDIS_URL="redis://127.0.0.1:6379"
+DIRECT_WORKER_CONCURRENCY="10"
+USER_PENDING_LIMIT="20"
+OPENAI_BASE_URL="https://hemasir.online/v1"
+```
 
 ## 部署
 
-部署文档：
+看：
 
 ```text
 deploy/DEPLOY.md
 ```
 
-快速启动：
-
-```bash
-cp deploy/production.env.example .env
-mkdir -p data public/generated
-docker compose up -d --build
-```
-
-## 日志
-
-业务日志：
-
-```bash
-tail -f public/generated/logs/direct-image.log
-```
-
-容器日志：
-
-```bash
-docker logs -f imagegen-platform
-```
-
-## 构建检查
+## 验证
 
 ```bash
 npm run build
+redis-cli ping
+psql "$DATABASE_URL" -c 'select count(*) from "User";'
 ```

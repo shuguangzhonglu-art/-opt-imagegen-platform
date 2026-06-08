@@ -57,29 +57,8 @@ function getImageDimensions(size: string) {
   return { width, height };
 }
 
-function getOpenAIClient() {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return null;
-  return createOpenAIClient({
-    apiKey,
-    baseURL: process.env.OPENAI_BASE_URL || undefined,
-  });
-}
-
-function createOpenAIClient(options: { apiKey: string; baseURL?: string }) {
-  return new OpenAI({
-    apiKey: options.apiKey,
-    baseURL: options.baseURL,
-    timeout: OPENAI_REQUEST_TIMEOUT_MS,
-  });
-}
-
 function getOpenAIModel() {
   return process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
-}
-
-function getOpenAIWireApi() {
-  return process.env.OPENAI_WIRE_API || "images";
 }
 
 function getFallbackImageModel() {
@@ -229,15 +208,6 @@ function shouldRetryImageFetch(error: unknown) {
       : "";
 
   return /other side closed|socketerror|econnreset|etimedout|terminated|network/i.test(cause);
-}
-
-function shouldFallbackToImagesApi(error: unknown) {
-  if (!(error instanceof Error)) return false;
-  if (error.name === "TimeoutError" || error.name === "AbortError") return true;
-  if (error.message.includes("aborted due to timeout")) return true;
-  if (error.message.includes("图片生成超时")) return true;
-  if (error.message === "fetch failed") return true;
-  return false;
 }
 
 function wait(ms: number) {
@@ -655,101 +625,6 @@ async function generateMockImages(input: GenerateImageInput): Promise<GeneratedA
       };
     }),
   );
-}
-
-async function generateOpenAiImages(input: GenerateImageInput): Promise<GeneratedAsset[]> {
-  const client = getOpenAIClient();
-  if (!client) return generateMockImages(input);
-
-  await ensureGeneratedDir();
-  const model = getOpenAIModel();
-  const wireApi = getOpenAIWireApi();
-
-  if (wireApi === "responses") {
-    try {
-      return await generateViaResponsesApi(input, model);
-    } catch (error) {
-      logImageProviderError({
-        provider: "openai-compatible-responses",
-        baseURL: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
-        model,
-        taskId: input.taskId,
-        sourceImagePath: input.sourceImagePath,
-        wireApi,
-        error,
-      });
-      throw new Error(formatOpenAIError(error, model));
-    }
-  }
-
-  try {
-    const response = await client.images.generate({
-      model,
-      prompt: buildPrompt(input),
-      size: normalizeOpenAISize(input.size, model),
-      quality: getOpenAIQuality(model, input.quality),
-      n: getOpenAIImageCount(model, input.quantity),
-    });
-
-    const items = response.data ?? [];
-    if (items.length === 0) throw new Error("图片接口未返回结果");
-
-    const { width, height } = getImageDimensions(input.size);
-    const results: GeneratedAsset[] = [];
-
-    for (const [index, item] of items.entries()) {
-      const base64Data = item.b64_json;
-      const remoteUrl = item.url;
-      const fileName = `${input.taskId}-${index + 1}.png`;
-
-      if (base64Data) {
-        const filePath = await uploadGeneratedBuffer({
-          buffer: Buffer.from(base64Data, "base64"),
-          fileName,
-        });
-        results.push({
-          filePath,
-          width,
-          height,
-        });
-      } else if (remoteUrl) {
-        let fileResp: Response;
-        try {
-          fileResp = await fetch(remoteUrl);
-        } catch (error) {
-          throw new Error(
-            `下载远程图片失败：${error instanceof Error ? error.message : "未知网络错误"}`,
-          );
-        }
-        if (!fileResp.ok) throw new Error("下载图片结果失败");
-        const arrayBuffer = await fileResp.arrayBuffer();
-        const filePath = await uploadGeneratedBuffer({
-          buffer: Buffer.from(arrayBuffer),
-          fileName,
-        });
-        results.push({
-          filePath,
-          width,
-          height,
-        });
-      } else {
-        throw new Error("图片结果为空");
-      }
-    }
-
-    return results;
-  } catch (error) {
-    logImageProviderError({
-      provider: "openai-compatible",
-      baseURL: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
-      model,
-      taskId: input.taskId,
-      sourceImagePath: input.sourceImagePath,
-      wireApi,
-      error,
-    });
-    throw new Error(formatOpenAIError(error, model));
-  }
 }
 
 async function generateViaImagesApi(

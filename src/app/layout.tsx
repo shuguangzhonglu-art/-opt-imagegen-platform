@@ -1,16 +1,16 @@
 import type { Metadata } from "next";
 
-import { startDirectTaskWorker } from "@/lib/services/direct-tasks";
+import { ensureRuntimeSetup } from "@/lib/bootstrap";
 
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "hema API image",
-  description: "用户自带 API Key 的图片生成页",
+  title: "Hemora",
+  description: "登录后用积分生成图片",
 };
 
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  startDirectTaskWorker();
+  await ensureRuntimeSetup();
 
   return (
     <html lang="zh-CN">

@@ -33,6 +33,18 @@ export async function ensureRuntimeSetup() {
       taskConcurrency: 1,
       fileRetentionDays: 30,
       signupBonus: 200,
+      emailVerificationEnabled: true,
+      smtpHost: "",
+      smtpPort: 587,
+      smtpUser: "",
+      smtpPassword: "",
+      smtpFrom: "",
+      turnstileEnabled: false,
+      turnstileSiteKey: "",
+      turnstileSecretKey: "",
+      registerRateLimitEnabled: true,
+      registerRateLimitWindowMinutes: 60,
+      registerRateLimitMax: 5,
     },
   });
 
@@ -54,13 +66,25 @@ export async function ensureRuntimeSetup() {
       passwordHash: adminHash,
       role: UserRole.ADMIN,
       status: UserStatus.ACTIVE,
+      emailVerifiedAt: new Date(),
     },
     create: {
       email: adminEmail,
       passwordHash: adminHash,
       role: UserRole.ADMIN,
       status: UserStatus.ACTIVE,
+      emailVerifiedAt: new Date(),
       wallet: { create: { balance: 0 } },
+    },
+  });
+
+  await prisma.user.updateMany({
+    where: {
+      emailVerifiedAt: null,
+      createdAt: { lt: new Date(Date.now() - 1000 * 60) },
+    },
+    data: {
+      emailVerifiedAt: new Date(),
     },
   });
 }

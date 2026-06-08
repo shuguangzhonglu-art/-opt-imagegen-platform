@@ -19,31 +19,37 @@ export async function adjustWalletBalance(input: {
   relatedCodeId?: string;
 }) {
   return prisma.$transaction(async (tx) => {
-    const wallet = await getWalletOrThrow(tx, input.userId);
-    const nextBalance = wallet.balance + input.amount;
-
-    if (nextBalance < 0) {
-      throw new Error("积分不足");
+    if (input.amount < 0) {
+      const updated = await tx.wallet.updateMany({
+        where: {
+          userId: input.userId,
+          balance: { gte: Math.abs(input.amount) },
+        },
+        data: { balance: { increment: input.amount } },
+      });
+      if (updated.count !== 1) throw new Error("积分不足");
+    } else {
+      await tx.wallet.update({
+        where: { userId: input.userId },
+        data: { balance: { increment: input.amount } },
+      });
     }
 
-    await tx.wallet.update({
-      where: { userId: input.userId },
-      data: { balance: nextBalance },
-    });
+    const wallet = await getWalletOrThrow(tx, input.userId);
 
     const transaction = await tx.creditTransaction.create({
       data: {
         userId: input.userId,
         type: input.type,
         amount: input.amount,
-        balanceAfter: nextBalance,
+        balanceAfter: wallet.balance,
         relatedTaskId: input.relatedTaskId,
         relatedCodeId: input.relatedCodeId,
         note: input.note,
       },
     });
 
-    return { balanceAfter: nextBalance, transaction };
+    return { balanceAfter: wallet.balance, transaction };
   });
 }
 
@@ -63,16 +69,12 @@ export async function redeemCodeForUser(input: { userId: string; code: string })
       throw new Error("卡密已过期");
     }
 
-    const wallet = await getWalletOrThrow(tx, input.userId);
-    const nextBalance = wallet.balance + redeemCode.creditAmount;
-
-    await tx.wallet.update({
-      where: { userId: input.userId },
-      data: { balance: nextBalance },
-    });
-
-    await tx.redeemCode.update({
-      where: { id: redeemCode.id },
+    const claimed = await tx.redeemCode.updateMany({
+      where: {
+        id: redeemCode.id,
+        status: "UNUSED",
+        redeemedAt: null,
+      },
       data: {
         status: "REDEEMED",
         redeemedAt: new Date(),
@@ -80,17 +82,24 @@ export async function redeemCodeForUser(input: { userId: string; code: string })
       },
     });
 
+    if (claimed.count !== 1) throw new Error("卡密不可用");
+
+    const wallet = await tx.wallet.update({
+      where: { userId: input.userId },
+      data: { balance: { increment: redeemCode.creditAmount } },
+    });
+
     await tx.creditTransaction.create({
       data: {
         userId: input.userId,
         type: "REDEEM_CODE",
         amount: redeemCode.creditAmount,
-        balanceAfter: nextBalance,
+        balanceAfter: wallet.balance,
         relatedCodeId: redeemCode.id,
         note: `兑换卡密 ${redeemCode.code}`,
       },
     });
 
-    return { nextBalance, redeemCode };
+    return { nextBalance: wallet.balance, redeemCode };
   });
 }

@@ -1,6 +1,6 @@
 "use server";
 
-import { redirect } from "next/navigation";
+import { redirect, unstable_rethrow } from "next/navigation";
 import { z } from "zod";
 
 import { requireAdmin } from "@/lib/auth";
@@ -56,6 +56,7 @@ export async function adjustUserCreditsAction(formData: FormData) {
 
     redirect(withMessage("/admin/users", "success", "用户积分已更新"));
   } catch (error) {
+    unstable_rethrow(error);
     redirect(withMessage("/admin/users", "error", error instanceof Error ? error.message : "积分更新失败"));
   }
 }
@@ -182,4 +183,88 @@ export async function updateSettingsAction(formData: FormData) {
   });
 
   redirect(withMessage("/admin/settings", "success", "平台参数已保存"));
+}
+
+export async function updateSecuritySettingsAction(formData: FormData) {
+  const admin = await requireAdmin();
+
+  const emailVerificationEnabled = formData.get("emailVerificationEnabled") === "on";
+  const smtpHost = String(formData.get("smtpHost") ?? "").trim();
+  const smtpPort = Number(formData.get("smtpPort") ?? 587);
+  const smtpUser = String(formData.get("smtpUser") ?? "").trim();
+  const smtpPassword = String(formData.get("smtpPassword") ?? "");
+  const smtpFrom = String(formData.get("smtpFrom") ?? "").trim();
+  const turnstileEnabled = formData.get("turnstileEnabled") === "on";
+  const turnstileSiteKey = String(formData.get("turnstileSiteKey") ?? "").trim();
+  const turnstileSecretKey = String(formData.get("turnstileSecretKey") ?? "").trim();
+  const registerRateLimitEnabled = formData.get("registerRateLimitEnabled") === "on";
+  const registerRateLimitWindowMinutes = Number(formData.get("registerRateLimitWindowMinutes") ?? 60);
+  const registerRateLimitMax = Number(formData.get("registerRateLimitMax") ?? 5);
+
+  if (!Number.isFinite(smtpPort) || smtpPort < 1) {
+    redirect(withMessage("/admin/security", "error", "SMTP 端口不合法"));
+  }
+
+  if (!Number.isFinite(registerRateLimitWindowMinutes) || registerRateLimitWindowMinutes < 1 || !Number.isFinite(registerRateLimitMax) || registerRateLimitMax < 1) {
+    redirect(withMessage("/admin/security", "error", "注册限流参数不合法"));
+  }
+
+  await prisma.appSetting.upsert({
+    where: { id: 1 },
+    update: {
+      emailVerificationEnabled,
+      smtpHost,
+      smtpPort,
+      smtpUser,
+      smtpPassword,
+      smtpFrom,
+      turnstileEnabled,
+      turnstileSiteKey,
+      turnstileSecretKey,
+      registerRateLimitEnabled,
+      registerRateLimitWindowMinutes,
+      registerRateLimitMax,
+    },
+    create: {
+      id: 1,
+      defaultUnitCost: 40,
+      availableSizes: "1024x1024:40,1024x1536:60,1536x1024:60,1024x1792:80,1792x1024:80",
+      taskConcurrency: 1,
+      fileRetentionDays: 30,
+      signupBonus: 200,
+      emailVerificationEnabled,
+      smtpHost,
+      smtpPort,
+      smtpUser,
+      smtpPassword,
+      smtpFrom,
+      turnstileEnabled,
+      turnstileSiteKey,
+      turnstileSecretKey,
+      registerRateLimitEnabled,
+      registerRateLimitWindowMinutes,
+      registerRateLimitMax,
+    },
+  });
+
+  await logAdminAction({
+    adminUserId: admin.id,
+    action: "UPDATE_SECURITY_SETTINGS",
+    targetType: "settings",
+    targetId: "1",
+    payload: {
+      emailVerificationEnabled,
+      smtpHost,
+      smtpPort,
+      smtpUser,
+      smtpFrom,
+      turnstileEnabled,
+      turnstileSiteKey,
+      registerRateLimitEnabled,
+      registerRateLimitWindowMinutes,
+      registerRateLimitMax,
+    },
+  });
+
+  redirect(withMessage("/admin/security", "success", "安全配置已保存"));
 }

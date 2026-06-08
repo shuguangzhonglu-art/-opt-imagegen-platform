@@ -1,10 +1,19 @@
 import { NextResponse } from "next/server";
 
-import { getDirectGenerateTask, processNextDirectGenerateTask, startDirectTaskWorker } from "@/lib/services/direct-tasks";
+import { getCurrentSession } from "@/lib/auth";
+import { getDirectGenerateTask } from "@/lib/services/direct-tasks";
 
 export async function GET(request: Request) {
-  startDirectTaskWorker();
-  await processNextDirectGenerateTask();
+  const session = await getCurrentSession();
+  if (!session) {
+    return NextResponse.json(
+      {
+        status: "failed",
+        error: "请先登录",
+      },
+      { status: 401 },
+    );
+  }
 
   const url = new URL(request.url);
   const taskId = url.searchParams.get("taskId") || "";
@@ -19,5 +28,5 @@ export async function GET(request: Request) {
     );
   }
 
-  return NextResponse.json(await getDirectGenerateTask(taskId));
+  return NextResponse.json(await getDirectGenerateTask(taskId, session.userId));
 }

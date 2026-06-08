@@ -1,26 +1,36 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { startDirectGenerateTask, startDirectTaskWorker } from "@/lib/services/direct-tasks";
+import { getCurrentSession } from "@/lib/auth";
+import { startDirectGenerateTask } from "@/lib/services/direct-tasks";
 
 function isUploadedFile(value: FormDataEntryValue): value is File {
   return typeof value === "object" && value !== null && "size" in value && typeof value.size === "number" && value.size > 0;
 }
 
 const generateSchema = z.object({
-  apiKey: z.string().min(10, "API Key 不能为空"),
   prompt: z.string().min(8, "提示词至少需要 8 个字符"),
   size: z.string().min(1, "请选择尺寸"),
+  generationStyle: z.enum(["direct", "kv"]).optional(),
 });
 
 export async function POST(request: Request) {
-  startDirectTaskWorker();
+  const session = await getCurrentSession();
+  if (!session) {
+    return NextResponse.json(
+      {
+        status: "failed",
+        error: "请先登录",
+      },
+      { status: 401 },
+    );
+  }
 
   const formData = await request.formData();
   const parsed = generateSchema.safeParse({
-    apiKey: String(formData.get("apiKey") ?? "").trim(),
     prompt: String(formData.get("prompt") ?? "").trim(),
     size: String(formData.get("size") ?? "").trim() || "1024x1024",
+    generationStyle: String(formData.get("generationStyle") ?? "").trim() || undefined,
   });
 
   if (!parsed.success) {
@@ -41,14 +51,26 @@ export async function POST(request: Request) {
     .map((item) => String(item).trim())
     .filter(Boolean);
   const sourceImagePath = sourceImagePaths[0] || String(formData.get("sourceImagePath") ?? "").trim() || undefined;
-  const task = await startDirectGenerateTask({
-    apiKey: parsed.data.apiKey,
-    prompt: parsed.data.prompt,
-    size: parsed.data.size,
-    sourceImagePath,
-    sourceImagePaths,
-    sourceFiles,
-  });
+  let task;
+  try {
+    task = await startDirectGenerateTask({
+      userId: session.userId,
+      prompt: parsed.data.prompt,
+      size: parsed.data.size,
+      generationStyle: parsed.data.generationStyle,
+      sourceImagePath,
+      sourceImagePaths,
+      sourceFiles,
+    });
+  } catch (error) {
+    return NextResponse.json(
+      {
+        status: "failed",
+        error: error instanceof Error ? error.message : "任务创建失败",
+      },
+      { status: 400 },
+    );
+  }
 
   return NextResponse.json(task);
 }

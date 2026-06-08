@@ -31,11 +31,13 @@ async function main() {
     where: { email: adminEmail },
     update: {
       passwordHash: adminHash,
+      displayName: "管理员",
       role: UserRole.ADMIN,
       status: UserStatus.ACTIVE,
     },
     create: {
       email: adminEmail,
+      displayName: "管理员",
       passwordHash: adminHash,
       role: UserRole.ADMIN,
       status: UserStatus.ACTIVE,
@@ -45,9 +47,10 @@ async function main() {
 
   await prisma.user.upsert({
     where: { email: demoUserEmail },
-    update: { passwordHash: demoHash },
+    update: { passwordHash: demoHash, displayName: "演示用户" },
     create: {
       email: demoUserEmail,
+      displayName: "演示用户",
       passwordHash: demoHash,
       wallet: { create: { balance: 1280 } },
     },

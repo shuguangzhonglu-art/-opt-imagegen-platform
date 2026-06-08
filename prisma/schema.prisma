@@ -4,7 +4,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -43,19 +43,35 @@ enum CreditTransactionType {
 model User {
   id            String              @id @default(cuid())
   email         String              @unique
+  displayName   String?
   passwordHash  String
   status        UserStatus          @default(ACTIVE)
   role          UserRole            @default(USER)
+  emailVerifiedAt DateTime?
   createdAt     DateTime            @default(now())
   lastLoginAt   DateTime?
   wallet        Wallet?
   sessions      Session[]
+  emailTokens   EmailVerificationToken[]
   transactions  CreditTransaction[]
   redeemedCodes RedeemCode[]        @relation("RedeemedBy")
   tasks         GenerationTask[]
   images        GeneratedImage[]
   auditLogs     AdminAuditLog[]     @relation("AdminActor")
   createdCodes  RedeemCode[]        @relation("CreatedBy")
+}
+
+model EmailVerificationToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 model Session {
@@ -117,6 +133,7 @@ model GenerationTask {
   userId       String
   prompt       String
   sourceImagePath String?
+  sourceImagePaths String?
   style        String
   size         String
   quantity     Int
@@ -125,7 +142,11 @@ model GenerationTask {
   totalCost    Int
   status       TaskStatus          @default(PENDING)
   errorMessage String?
+  rawError     String?
+  queueJobId   String?
+  retryCount   Int                 @default(0)
   requestedAt  DateTime            @default(now())
+  queuedAt     DateTime?
   startedAt    DateTime?
   finishedAt   DateTime?
   user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -170,6 +191,18 @@ model AppSetting {
   taskConcurrency   Int
   fileRetentionDays Int
   signupBonus       Int
+  emailVerificationEnabled Boolean @default(true)
+  smtpHost          String   @default("")
+  smtpPort          Int      @default(587)
+  smtpUser          String   @default("")
+  smtpPassword      String   @default("")
+  smtpFrom          String   @default("")
+  turnstileEnabled  Boolean  @default(false)
+  turnstileSiteKey  String   @default("")
+  turnstileSecretKey String  @default("")
+  registerRateLimitEnabled Boolean @default(true)
+  registerRateLimitWindowMinutes Int @default(60)
+  registerRateLimitMax Int @default(5)
   updatedAt         DateTime @updatedAt
   createdAt         DateTime @default(now())
 }

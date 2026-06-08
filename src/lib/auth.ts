@@ -8,6 +8,13 @@ import { hashPassword, verifyPassword } from "@/lib/password";
 
 const SESSION_COOKIE = "flux_session";
 const SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 14;
+const EMAIL_TOKEN_MAX_AGE_MS = 1000 * 60 * 60 * 24;
+
+export type AuthFailureReason = "INVALID_CREDENTIALS" | "DISABLED" | "EMAIL_UNVERIFIED";
+
+export type AuthResult =
+  | { ok: true; user: NonNullable<Awaited<ReturnType<typeof findUserForAuth>>> }
+  | { ok: false; reason: AuthFailureReason };
 
 function sha256(value: string) {
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -17,51 +24,268 @@ export function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
-export async function createUser(email: string, password: string, signupBonus: number) {
-  const passwordHash = await hashPassword(password);
+function getDefaultDisplayName() {
+  return "新用户";
+}
 
-  return prisma.$transaction(async (tx) => {
-    const user = await tx.user.create({
-      data: {
-        email,
-        passwordHash,
-        wallet: {
-          create: {
-            balance: signupBonus,
-          },
-        },
-      },
-      include: {
-        wallet: true,
-      },
-    });
-
-    await tx.creditTransaction.create({
-      data: {
-        userId: user.id,
-        type: "SIGNUP_BONUS",
-        amount: signupBonus,
-        balanceAfter: signupBonus,
-        note: "新用户注册赠送积分",
-      },
-    });
-
-    return user;
+async function findUserForAuth(email: string) {
+  return prisma.user.findUnique({
+    where: { email },
+    include: { wallet: true },
   });
 }
 
-export async function authenticateUser(email: string, password: string) {
-  const user = await prisma.user.findUnique({
+export async function createUser(email: string, password: string) {
+  const passwordHash = await hashPassword(password);
+
+  return prisma.user.create({
+    data: {
+      email,
+      displayName: getDefaultDisplayName(),
+      passwordHash,
+      wallet: {
+        create: {
+          balance: 0,
+        },
+      },
+    },
+    include: {
+      wallet: true,
+    },
+  });
+}
+
+export async function createPendingRegistrationUser(
+  email: string,
+  password: string,
+  displayName: string,
+) {
+  const existing = await prisma.user.findUnique({
     where: { email },
     include: { wallet: true },
   });
 
-  if (!user || user.status !== "ACTIVE") return null;
+  if (existing?.emailVerifiedAt) {
+    return { ok: false as const, reason: "ALREADY_VERIFIED" as const };
+  }
+
+  const passwordHash = await hashPassword(password);
+  const user = existing
+    ? await prisma.user.update({
+        where: { id: existing.id },
+        data: {
+          displayName,
+          passwordHash,
+          status: "ACTIVE",
+        },
+        include: { wallet: true },
+      })
+    : await prisma.user.create({
+        data: {
+          email,
+          displayName,
+          passwordHash,
+          wallet: {
+            create: {
+              balance: 0,
+            },
+          },
+        },
+        include: {
+          wallet: true,
+        },
+      });
+
+  return { ok: true as const, user };
+}
+
+export async function authenticateUser(email: string, password: string) {
+  const result = await authenticateUserDetailed(email, password);
+  return result.ok ? result.user : null;
+}
+
+export async function authenticateUserDetailed(email: string, password: string): Promise<AuthResult> {
+  const user = await findUserForAuth(email);
+
+  if (!user) return { ok: false, reason: "INVALID_CREDENTIALS" };
 
   const valid = await verifyPassword(password, user.passwordHash);
-  if (!valid) return null;
+  if (!valid) return { ok: false, reason: "INVALID_CREDENTIALS" };
 
-  return user;
+  if (user.status !== "ACTIVE") return { ok: false, reason: "DISABLED" };
+  if (!user.emailVerifiedAt && user.role !== "ADMIN") return { ok: false, reason: "EMAIL_UNVERIFIED" };
+
+  return { ok: true, user };
+}
+
+export async function createEmailVerificationToken(userId: string) {
+  const token = crypto.randomBytes(32).toString("hex");
+  const tokenHash = sha256(token);
+  const expiresAt = new Date(Date.now() + EMAIL_TOKEN_MAX_AGE_MS);
+
+  await prisma.emailVerificationToken.create({
+    data: {
+      tokenHash,
+      userId,
+      expiresAt,
+    },
+  });
+
+  return { token, expiresAt };
+}
+
+export async function createEmailVerificationCode(userId: string) {
+  const code = String(crypto.randomInt(100000, 1000000));
+  const tokenHash = sha256(`${userId}:${code}`);
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.emailVerificationToken.deleteMany({
+      where: {
+        userId,
+        usedAt: null,
+      },
+    });
+    await tx.emailVerificationToken.create({
+      data: {
+        tokenHash,
+        userId,
+        expiresAt,
+      },
+    });
+  });
+
+  return { code, expiresAt };
+}
+
+export async function verifyEmailToken(token: string, signupBonus: number) {
+  const tokenHash = sha256(token);
+  const now = new Date();
+
+  return prisma.$transaction(async (tx) => {
+    const record = await tx.emailVerificationToken.findUnique({
+      where: { tokenHash },
+      include: {
+        user: {
+          include: {
+            wallet: true,
+          },
+        },
+      },
+    });
+
+    if (!record || record.usedAt || record.expiresAt < now) {
+      return { ok: false as const, reason: "INVALID_OR_EXPIRED" as const };
+    }
+
+    await tx.emailVerificationToken.update({
+      where: { id: record.id },
+      data: { usedAt: now },
+    });
+
+    if (record.user.emailVerifiedAt) {
+      return { ok: true as const, alreadyVerified: true as const };
+    }
+
+    const wallet = record.user.wallet ?? await tx.wallet.create({
+      data: {
+        userId: record.userId,
+        balance: 0,
+      },
+    });
+
+    const updatedWallet = signupBonus > 0
+      ? await tx.wallet.update({
+          where: { userId: record.userId },
+          data: { balance: { increment: signupBonus } },
+        })
+      : wallet;
+
+    await tx.user.update({
+      where: { id: record.userId },
+      data: { emailVerifiedAt: now },
+    });
+
+    if (signupBonus > 0) {
+      await tx.creditTransaction.create({
+        data: {
+          userId: record.userId,
+          type: "SIGNUP_BONUS",
+          amount: signupBonus,
+          balanceAfter: updatedWallet.balance,
+          note: "邮箱验证后赠送积分",
+        },
+      });
+    }
+
+    return { ok: true as const, alreadyVerified: false as const };
+  });
+}
+
+export async function verifyEmailCode(email: string, code: string, signupBonus: number) {
+  const normalizedEmail = normalizeEmail(email);
+  const now = new Date();
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({
+      where: { email: normalizedEmail },
+      include: { wallet: true },
+    });
+    if (!user) {
+      return { ok: false as const, reason: "INVALID_OR_EXPIRED" as const };
+    }
+
+    const tokenHash = sha256(`${user.id}:${code}`);
+    const record = await tx.emailVerificationToken.findUnique({
+      where: { tokenHash },
+    });
+
+    if (!record || record.userId !== user.id || record.usedAt || record.expiresAt < now) {
+      return { ok: false as const, reason: "INVALID_OR_EXPIRED" as const };
+    }
+
+    await tx.emailVerificationToken.update({
+      where: { id: record.id },
+      data: { usedAt: now },
+    });
+
+    if (user.emailVerifiedAt) {
+      return { ok: true as const, alreadyVerified: true as const, userId: user.id };
+    }
+
+    const wallet = user.wallet ?? await tx.wallet.create({
+      data: {
+        userId: user.id,
+        balance: 0,
+      },
+    });
+
+    const updatedWallet = signupBonus > 0
+      ? await tx.wallet.update({
+          where: { userId: user.id },
+          data: { balance: { increment: signupBonus } },
+        })
+      : wallet;
+
+    await tx.user.update({
+      where: { id: user.id },
+      data: { emailVerifiedAt: now },
+    });
+
+    if (signupBonus > 0) {
+      await tx.creditTransaction.create({
+        data: {
+          userId: user.id,
+          type: "SIGNUP_BONUS",
+          amount: signupBonus,
+          balanceAfter: updatedWallet.balance,
+          note: "邮箱验证码验证后赠送积分",
+        },
+      });
+    }
+
+    return { ok: true as const, alreadyVerified: false as const, userId: user.id };
+  });
 }
 
 export async function createSession(userId: string) {
@@ -136,12 +360,12 @@ export async function getCurrentSession() {
 
 export async function requireUser() {
   const session = await getCurrentSession();
-  if (!session) redirect("/auth/login");
+  if (!session) redirect("/auth/login?redirectTo=%2Fstudio");
   return session.user;
 }
 
 export async function requireAdmin() {
   const user = await requireUser();
-  if (user.role !== "ADMIN") redirect("/studio");
+  if (user.role !== "ADMIN") redirect("/");
   return user;
 }
