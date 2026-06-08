@@ -1,7 +1,9 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 
 import { Notice } from "@/components/notice";
 import { loginAction } from "@/lib/actions/auth-actions";
+import { getCurrentSession } from "@/lib/auth";
 
 type LoginPageProps = {
   searchParams?: Promise<{
@@ -13,7 +15,12 @@ type LoginPageProps = {
 
 export default async function LoginPage({ searchParams }: LoginPageProps) {
   const params = (await searchParams) ?? {};
-  const redirectTo = params.redirectTo || "/";
+  const redirectTo = params.redirectTo || "/studio";
+  const session = await getCurrentSession();
+
+  if (session) {
+    redirect(redirectTo.startsWith("/") && !redirectTo.startsWith("//") ? redirectTo : "/studio");
+  }
 
   return (
     <main className="auth-page auth-login-page">

@@ -1,8 +1,10 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 
 import { Notice } from "@/components/notice";
 import { TurnstileWidget } from "@/components/turnstile-widget";
 import { registerAction, verifyRegisterCodeAction } from "@/lib/actions/auth-actions";
+import { getCurrentSession } from "@/lib/auth";
 import { getPlatformConfig } from "@/lib/config";
 
 type RegisterPageProps = {
@@ -17,10 +19,15 @@ type RegisterPageProps = {
 
 export default async function RegisterPage({ searchParams }: RegisterPageProps) {
   const params = (await searchParams) ?? {};
-  const redirectTo = params.redirectTo || "/";
+  const redirectTo = params.redirectTo || "/studio";
+  const session = await getCurrentSession();
   const config = await getPlatformConfig();
   const isVerifyStep = params.step === "verify";
   const email = params.email || "";
+
+  if (session) {
+    redirect(redirectTo.startsWith("/") && !redirectTo.startsWith("//") ? redirectTo : "/studio");
+  }
 
   return (
     <main className="auth-page auth-login-page">

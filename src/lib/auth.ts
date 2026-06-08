@@ -8,9 +8,7 @@ import { prisma } from "@/lib/db";
 import { hashPassword, verifyPassword } from "@/lib/password";
 
 const SESSION_COOKIE = "flux_session";
-const BROWSER_COOKIE = "flux_browser";
 const SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 14;
-const BROWSER_COOKIE_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 365 * 2;
 const EMAIL_TOKEN_MAX_AGE_MS = 1000 * 60 * 60 * 24;
 
 export type AuthFailureReason = "INVALID_CREDENTIALS" | "DISABLED" | "EMAIL_UNVERIFIED";
@@ -18,13 +16,6 @@ export type AuthFailureReason = "INVALID_CREDENTIALS" | "DISABLED" | "EMAIL_UNVE
 export type AuthResult =
   | { ok: true; user: NonNullable<Awaited<ReturnType<typeof findUserForAuth>>> }
   | { ok: false; reason: AuthFailureReason };
-
-export class BrowserAccountConflictError extends Error {
-  constructor() {
-    super("当前浏览器已绑定其他账号，请更换浏览器或先清空该浏览器登录环境");
-    this.name = "BrowserAccountConflictError";
-  }
-}
 
 function sha256(value: string) {
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -306,27 +297,8 @@ export async function createSession(userId: string) {
   const tokenHash = sha256(token);
   const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_MS);
   const cookieStore = await cookies();
-  const browserToken = cookieStore.get(BROWSER_COOKIE)?.value ?? crypto.randomBytes(32).toString("hex");
-  const browserKeyHash = sha256(browserToken);
-
-  const existingBrowserLock = await prisma.browserLock.findUnique({
-    where: { browserKeyHash },
-  });
-
-  if (existingBrowserLock && existingBrowserLock.userId !== userId) {
-    throw new BrowserAccountConflictError();
-  }
 
   await prisma.$transaction(async (tx) => {
-    await tx.browserLock.upsert({
-      where: { browserKeyHash },
-      update: { userId },
-      create: {
-        browserKeyHash,
-        userId,
-      },
-    });
-
     await tx.session.create({
       data: {
         tokenHash,
@@ -347,13 +319,6 @@ export async function createSession(userId: string) {
     secure: process.env.NODE_ENV === "production",
     path: "/",
     expires: expiresAt,
-  });
-  cookieStore.set(BROWSER_COOKIE, browserToken, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    expires: new Date(Date.now() + BROWSER_COOKIE_MAX_AGE_MS),
   });
 }
 
