@@ -7,6 +7,7 @@ import { requireAdmin } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { getPlatformConfig } from "@/lib/config";
 import { generateRedeemCodes } from "@/lib/services/redeem-codes";
+import { saveRiskControlConfig } from "@/lib/services/risk-control";
 import { adjustWalletBalance } from "@/lib/services/wallet";
 import { withMessage } from "@/lib/utils/flash";
 
@@ -267,4 +268,68 @@ export async function updateSecuritySettingsAction(formData: FormData) {
   });
 
   redirect(withMessage("/admin/security", "success", "安全配置已保存"));
+}
+
+export async function updateRiskControlSettingsAction(formData: FormData) {
+  const admin = await requireAdmin();
+  const timeoutMs = Number(formData.get("timeoutMs") ?? 3000);
+  const retryCount = Number(formData.get("retryCount") ?? 2);
+  const sampleRate = Number(formData.get("sampleRate") ?? 100);
+  const retentionDays = Number(formData.get("retentionDays") ?? 30);
+  const modeRaw = String(formData.get("mode") ?? "PRE_BLOCK");
+  const keywordStrategyRaw = String(formData.get("keywordStrategy") ?? "KEYWORD_AND_API");
+  const mode = modeRaw === "OBSERVE" || modeRaw === "OFF" ? modeRaw : "PRE_BLOCK";
+  const keywordStrategy =
+    keywordStrategyRaw === "KEYWORD_ONLY" || keywordStrategyRaw === "API_ONLY"
+      ? keywordStrategyRaw
+      : "KEYWORD_AND_API";
+
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 100 || !Number.isFinite(retryCount) || retryCount < 0) {
+    redirect(withMessage("/admin/risk-control", "error", "审计请求参数不合法"));
+  }
+
+  if (!Number.isFinite(sampleRate) || sampleRate < 0 || sampleRate > 100 || !Number.isFinite(retentionDays) || retentionDays < 1) {
+    redirect(withMessage("/admin/risk-control", "error", "采样率或日志保留参数不合法"));
+  }
+
+  await saveRiskControlConfig({
+    enabled: formData.get("enabled") === "on",
+    mode,
+    baseUrl: String(formData.get("baseUrl") ?? "https://api.openai.com").trim() || "https://api.openai.com",
+    model: String(formData.get("model") ?? "omni-moderation-latest").trim() || "omni-moderation-latest",
+    apiKeys: String(formData.get("apiKeys") ?? "")
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean),
+    timeoutMs,
+    retryCount,
+    sampleRate,
+    keywordStrategy,
+    blockedKeywords: String(formData.get("blockedKeywords") ?? "")
+      .split(/\r?\n|,/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 10000),
+    retentionDays,
+    notifyOnHit: formData.get("notifyOnHit") === "on",
+    blockMessage: String(formData.get("blockMessage") ?? "").trim() || "内容审计命中风险规则，请调整输入后重试",
+  });
+
+  await logAdminAction({
+    adminUserId: admin.id,
+    action: "UPDATE_RISK_CONTROL_SETTINGS",
+    targetType: "settings",
+    targetId: "1",
+    payload: {
+      enabled: formData.get("enabled") === "on",
+      mode,
+      keywordStrategy,
+      timeoutMs,
+      retryCount,
+      sampleRate,
+      retentionDays,
+    },
+  });
+
+  redirect(withMessage("/admin/risk-control", "success", "内容审计配置已保存"));
 }

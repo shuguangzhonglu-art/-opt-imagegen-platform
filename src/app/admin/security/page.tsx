@@ -122,6 +122,7 @@ export default async function AdminSecurityPage({ searchParams }: SecurityPagePr
 
         <div className="security-actions">
           <Link href="/admin/users" className="ghost-button compact">返回用户</Link>
+          <Link href="/admin/risk-control" className="ghost-button compact">风控中心</Link>
           <button type="submit" className="primary-button compact">保存配置</button>
         </div>
       </form>

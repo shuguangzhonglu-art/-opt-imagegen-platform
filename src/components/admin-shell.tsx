@@ -13,6 +13,7 @@ const links = [
   { href: "/admin", label: "概览" },
   { href: "/admin/users", label: "用户管理" },
   { href: "/admin/redeem-codes", label: "卡券管理" },
+  { href: "/admin/risk-control", label: "风控中心" },
   { href: "/admin/tasks", label: "任务记录" },
   { href: "/admin/transactions", label: "积分流水" },
   { href: "/admin/settings", label: "设置中心" },

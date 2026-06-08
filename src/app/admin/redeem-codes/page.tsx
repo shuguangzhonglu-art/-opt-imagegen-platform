@@ -67,6 +67,7 @@ export default async function AdminRedeemCodesPage({ searchParams }: RedeemCodes
         <div className="toolbar-actions">
           <button className="ghost-button compact" type="button">刷新</button>
           <Link href="/admin/security" className="ghost-button compact">安全配置</Link>
+          <Link href="/admin/risk-control" className="ghost-button compact">风控中心</Link>
           <button className="ghost-button compact" type="button">导出 CSV</button>
           <details className="admin-modal-trigger">
             <summary className="primary-button compact">生成兑换码</summary>

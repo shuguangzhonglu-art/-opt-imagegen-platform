@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { getPlatformConfig, getSizeCost } from "@/lib/config";
 import { adjustWalletBalance } from "@/lib/services/wallet";
 import { generateImages } from "@/lib/services/image-provider";
+import { checkContentModeration } from "@/lib/services/risk-control";
 
 export async function createGenerationTask(input: {
   userId: string;
@@ -15,6 +16,17 @@ export async function createGenerationTask(input: {
   const config = await getPlatformConfig();
   const unitCost = getSizeCost(config, input.size);
   const totalCost = unitCost * input.quantity;
+  const user = await prisma.user.findUnique({
+    where: { id: input.userId },
+    select: { email: true },
+  });
+
+  await checkContentModeration({
+    userId: input.userId,
+    userEmail: user?.email,
+    endpoint: "queued-generation",
+    prompt: input.prompt,
+  });
 
   const task = await prisma.generationTask.create({
     data: {

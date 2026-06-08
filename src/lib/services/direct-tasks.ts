@@ -13,6 +13,7 @@ import {
 } from "@/lib/services/image-provider";
 import { appendDirectImageLog } from "@/lib/services/direct-log";
 import { normalizeStoredImageUrl } from "@/lib/services/object-storage";
+import { checkContentModeration } from "@/lib/services/risk-control";
 
 export type DirectGenerateStyle = "direct" | "kv";
 
@@ -60,6 +61,16 @@ function parseSourceImagePaths(value?: string | null, fallback?: string | null) 
 function getElapsedMs(task: { startedAt?: Date | null; finishedAt?: Date | null }) {
   if (!task.startedAt) return undefined;
   return (task.finishedAt ?? new Date()).getTime() - task.startedAt.getTime();
+}
+
+function formatTaskError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (/<html|<!doctype|cloudflare|error code 524|timeout occurred/i.test(message)) {
+    return "上游生成超时，请稍后重试";
+  }
+
+  return message.length > 240 ? `${message.slice(0, 240)}...` : message;
 }
 
 async function taskToState(taskId: string, userId?: string): Promise<DirectGenerateTaskState> {
@@ -127,6 +138,18 @@ export async function startDirectGenerateTask(params: {
 }): Promise<DirectGenerateTaskState> {
   const config = await getPlatformConfig();
   const cost = getSizeCost(config, params.size);
+  const user = await prisma.user.findUnique({
+    where: { id: params.userId },
+    select: { email: true },
+  });
+
+  await checkContentModeration({
+    userId: params.userId,
+    userEmail: user?.email,
+    endpoint: params.generationStyle === "kv" ? "kv-direct-generate" : "direct-generate",
+    prompt: params.prompt,
+  });
+
   const uploadedSourceImages = params.sourceFiles?.length
     ? await Promise.all(
         params.sourceFiles
@@ -332,6 +355,7 @@ export async function processDirectGenerateTaskById(taskId: string) {
       images: images.map((image) => image.filePath),
     });
   } catch (error) {
+    const errorMessage = formatTaskError(error);
     const rawError =
       error instanceof Error && "rawPayload" in error
         ? String((error as Error & { rawPayload?: unknown }).rawPayload ?? "")
@@ -358,7 +382,7 @@ export async function processDirectGenerateTaskById(taskId: string) {
           status: "FAILED",
           finishedAt: new Date(),
           retryCount: { increment: 1 },
-          errorMessage: error instanceof Error ? error.message : "生成失败",
+          errorMessage,
           rawError,
         },
       });
@@ -367,7 +391,7 @@ export async function processDirectGenerateTaskById(taskId: string) {
     await appendDirectImageLog("task.failed", {
       taskId: task.id,
       elapsedMs: Date.now() - started,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage,
       rawError,
     });
   }

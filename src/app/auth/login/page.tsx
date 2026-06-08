@@ -44,15 +44,6 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
             </label>
             <button type="submit" className="primary-button auth-login-submit">登录</button>
           </form>
-          <div className="auth-divider">
-            <span />
-            <em>或</em>
-            <span />
-          </div>
-          <button type="button" className="auth-google-button">
-            <strong>G</strong>
-            使用 Google 继续
-          </button>
           <p className="auth-hint">
             还没有账号？<Link href={`/auth/register?redirectTo=${encodeURIComponent(redirectTo)}`}>立即注册</Link>
           </p>

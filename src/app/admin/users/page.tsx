@@ -67,6 +67,7 @@ export default async function AdminUsersPage({ searchParams }: UsersPageProps) {
         <div className="toolbar-actions">
           <Link href="/admin/redeem-codes" className="ghost-button compact">兑换码</Link>
           <Link href="/admin/security" className="ghost-button compact">安全配置</Link>
+          <Link href="/admin/risk-control" className="ghost-button compact">风控中心</Link>
           <button className="ghost-button compact" type="button">筛选设置</button>
           <button className="ghost-button compact" type="button">列设置</button>
           <button className="primary-button compact" type="button">创建用户</button>

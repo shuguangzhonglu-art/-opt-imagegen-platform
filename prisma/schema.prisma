@@ -32,6 +32,19 @@ enum TaskStatus {
   FAILED
 }
 
+enum ModerationMode {
+  PRE_BLOCK
+  OBSERVE
+  OFF
+}
+
+enum ModerationResult {
+  PASSED
+  BLOCKED
+  ERROR
+  SAMPLED
+}
+
 enum CreditTransactionType {
   SIGNUP_BONUS
   ADMIN_ADJUSTMENT
@@ -203,8 +216,47 @@ model AppSetting {
   registerRateLimitEnabled Boolean @default(true)
   registerRateLimitWindowMinutes Int @default(60)
   registerRateLimitMax Int @default(5)
+  contentModerationEnabled Boolean @default(false)
+  moderationMode ModerationMode @default(PRE_BLOCK)
+  moderationBaseUrl String @default("https://api.openai.com")
+  moderationModel String @default("omni-moderation-latest")
+  moderationApiKeys String @default("")
+  moderationTimeoutMs Int @default(3000)
+  moderationRetryCount Int @default(2)
+  moderationSampleRate Int @default(100)
+  moderationKeywordStrategy String @default("KEYWORD_AND_API")
+  moderationBlockedKeywords String @default("")
+  moderationRetentionDays Int @default(30)
+  moderationNotifyOnHit Boolean @default(false)
+  moderationBlockMessage String @default("内容审计命中风险规则，请调整输入后重试")
   updatedAt         DateTime @updatedAt
   createdAt         DateTime @default(now())
+}
+
+model ContentModerationLog {
+  id              String           @id @default(cuid())
+  userId          String?
+  userEmail       String?
+  apiKeyTail      String?
+  endpoint        String
+  model           String
+  result          ModerationResult
+  action          String
+  highestCategory String?
+  highestScore    Float            @default(0)
+  inputSummary    String
+  latencyMs       Int              @default(0)
+  queueDelayMs    Int?
+  violationCount  Int              @default(0)
+  autoBanned      Boolean          @default(false)
+  emailSent       Boolean          @default(false)
+  errorMessage    String?
+  createdAt       DateTime         @default(now())
+
+  @@index([createdAt])
+  @@index([userId, createdAt])
+  @@index([result, createdAt])
+  @@index([endpoint, createdAt])
 }
 
 model DirectImageRecord {

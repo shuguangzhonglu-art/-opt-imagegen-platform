@@ -24,6 +24,8 @@ import type { DirectGenerateTaskState } from "@/lib/services/direct-tasks";
 const SIZE_STORAGE_KEY = "direct-image-generator-size";
 const SIZE_OPTIONS = parseSizes("1024x1024:0,1024x1536:0,1536x1024:0,1024x1792:0,1792x1024:0");
 const HISTORY_PAGE_SIZE = 12;
+const GALLERY_SINGLE_COLUMN_MAX_WIDTH = 720;
+const GALLERY_DOUBLE_COLUMN_MAX_WIDTH = 1080;
 const PENDING_PARTICLES = Array.from({ length: 126 }, (_, index) => {
   const columns = 14;
   const col = index % columns;
@@ -39,6 +41,22 @@ function getSizeAspectRatio(size: string) {
   const [width, height] = size.split("x").map(Number);
   if (!width || !height) return "1 / 1";
   return `${width} / ${height}`;
+}
+
+function getDisplayAspectRatio(size: string) {
+  const [width, height] = size.split("x").map(Number);
+  if (!width || !height) return "1 / 1";
+
+  const ratio = width / height;
+  if (ratio > 1) return `${Math.min(ratio, 4 / 3)} / 1`;
+  if (ratio < 1) return `1 / ${Math.min(1 / ratio, 4 / 3)}`;
+  return "1 / 1";
+}
+
+function getImageDisplayAspectRatio(image: GalleryItem) {
+  if (image.size) return getDisplayAspectRatio(image.size);
+  if (image.width > 0 && image.height > 0) return getDisplayAspectRatio(`${image.width}x${image.height}`);
+  return "1 / 1";
 }
 
 function getSizePreviewStyle(size: string): CSSProperties {
@@ -61,6 +79,51 @@ function formatHistoryDate(value?: string) {
     month: "2-digit",
     day: "2-digit",
   });
+}
+
+function ActionIcon({ name }: { name: "download" | "retry" | "reuse" | "edit" | "delete" }) {
+  if (name === "download") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 3v13" />
+        <path d="m6.5 10.5 5.5 5.5 5.5-5.5" />
+        <path d="M5 21h14" />
+      </svg>
+    );
+  }
+  if (name === "retry") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 12a8 8 0 1 0 2.4-5.7" />
+        <path d="M4 4v6h6" />
+      </svg>
+    );
+  }
+  if (name === "reuse") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M9 7 4 12l5 5" />
+        <path d="M20 17a7 7 0 0 0-7-7H4" />
+      </svg>
+    );
+  }
+  if (name === "edit") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="m4 20 4.2-1 10.4-10.4a2.2 2.2 0 0 0-3.1-3.1L5.1 15.9 4 20Z" />
+        <path d="m14 7 3 3" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 7h16" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+      <path d="M6 7l1 14h10l1-14" />
+      <path d="M9 7V4h6v3" />
+    </svg>
+  );
 }
 
 function readStoredSize() {
@@ -156,6 +219,7 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
       : "",
   );
   const [searchQuery, setSearchQuery] = useState("");
+  const [galleryColumnCount, setGalleryColumnCount] = useState(3);
   const [referenceItems, setReferenceItems] = useState<ReferenceItem[]>([]);
   const [historyImages, setHistoryImages] = useState<DirectGenerateState["history"]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -187,8 +251,8 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
   }
 
   useEffect(() => {
-    window.localStorage.setItem(SIZE_STORAGE_KEY, size);
-  }, [size]);
+    if (!isKvMode) window.localStorage.setItem(SIZE_STORAGE_KEY, size);
+  }, [isKvMode, size]);
 
   useEffect(() => {
     let cancelled = false;
@@ -322,6 +386,23 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
       }
     };
   }, [referenceItems, kvLogo]);
+
+  useEffect(() => {
+    function syncGalleryColumnCount() {
+      const width = window.innerWidth;
+      if (width <= GALLERY_SINGLE_COLUMN_MAX_WIDTH) {
+        setGalleryColumnCount(1);
+      } else if (width <= GALLERY_DOUBLE_COLUMN_MAX_WIDTH) {
+        setGalleryColumnCount(2);
+      } else {
+        setGalleryColumnCount(3);
+      }
+    }
+
+    syncGalleryColumnCount();
+    window.addEventListener("resize", syncGalleryColumnCount);
+    return () => window.removeEventListener("resize", syncGalleryColumnCount);
+  }, []);
 
   async function handleLoadMore() {
     if (historyLoading) return;
@@ -664,6 +745,12 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
     const searchable = `${image.prompt ?? ""} ${image.size ?? ""} ${image.width}x${image.height}`.toLowerCase();
     return searchable.includes(query);
   });
+  const runningPendingCards = pendingCards.filter((card) => card.status === "running");
+  const failedPendingCards = pendingCards.filter((card) => card.status === "failed");
+  const galleryColumns = Array.from({ length: galleryColumnCount }, () => [] as GalleryItem[]);
+  filteredImages.forEach((image, index) => {
+    galleryColumns[index % galleryColumnCount].push(image);
+  });
 
   return (
     <main className={`new-home-page ${isKvMode ? "kv-page" : ""}`}>
@@ -910,8 +997,9 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                     <button
                       key={item.label}
                       type="button"
+                      role="radio"
                       className={`new-home-size-option ${size === item.label ? "selected" : ""}`}
-                      aria-pressed={size === item.label}
+                      aria-checked={size === item.label}
                       onClick={() => setSize(item.label)}
                       >
                       <i
@@ -970,8 +1058,8 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
             <Notice type="error" message={state.error} />
             <Notice type="success" message={state.success} />
 
-            <section className="new-home-gallery">
-              {pendingCards.map((pendingCard) => {
+            <section className="new-home-gallery" style={{ "--gallery-columns": galleryColumnCount } as CSSProperties}>
+              {runningPendingCards.map((pendingCard) => {
                 return (
                   <article key={pendingCard.taskId} className={`new-home-history-card pending ${pendingCard.status === "failed" ? "failed" : ""}`}>
                     <div
@@ -1033,45 +1121,112 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
               })}
 
               {filteredImages.length ? (
-                filteredImages.map((image, index) => (
-                  <article key={`${image.filePath}-${index}`} className="new-home-history-card">
-                    <div className="new-home-thumb-wrap">
-                      <button
-                        type="button"
-                        className="new-home-history-thumb"
-                        onClick={() => setLightboxImage(image)}
-                      >
-                        <Image
-                          src={image.filePath}
-                          alt="生成图片"
-                          width={image.width}
-                          height={image.height}
-                          className="new-home-image"
-                          unoptimized
-                          loading={index < 6 ? "eager" : "lazy"}
-                        />
-                      </button>
-                      <a
-                        href={image.filePath}
-                        download
-                        className="new-home-card-download"
-                        aria-label="下载"
-                        title="下载"
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        <span aria-hidden="true">⇩</span>
-                      </a>
-                      <div className="new-home-image-meta">
-                        <span>{image.size || `${image.width}x${image.height}`}</span>
-                        {image.createdAt ? <span>{formatHistoryDate(image.createdAt)}</span> : null}
-                      </div>
-                      <div className="new-home-history-body">
-                        {image.prompt ? <p className="new-home-card-prompt">{image.prompt}</p> : null}
-                        <div className="new-home-history-actions">
+                <div className="new-home-gallery-columns">
+                  {galleryColumns.map((column, columnIndex) => (
+                    <div key={`gallery-column-${columnIndex}`} className="new-home-gallery-column">
+                      {column.map((image, imageIndex) => {
+                        const eagerIndex = columnIndex + imageIndex * galleryColumnCount;
+                        return (
+                          <article key={`${image.filePath}-${columnIndex}-${imageIndex}`} className="new-home-history-card">
+                            <div
+                              className="new-home-thumb-wrap"
+                              style={{ aspectRatio: getImageDisplayAspectRatio(image) }}
+                            >
+                              <button
+                                type="button"
+                                className="new-home-history-thumb"
+                                onClick={() => setLightboxImage(image)}
+                              >
+                                <Image
+                                  src={image.filePath}
+                                  alt="生成图片"
+                                  width={image.width}
+                                  height={image.height}
+                                  className="new-home-image"
+                                  unoptimized
+                                  loading={eagerIndex < 6 ? "eager" : "lazy"}
+                                />
+                              </button>
+                              <a
+                                href={image.filePath}
+                                download
+                                className="new-home-card-download"
+                                aria-label="下载"
+                                title="下载"
+                                onClick={(event) => event.stopPropagation()}
+                              >
+                                <ActionIcon name="download" />
+                              </a>
+                              <div className="new-home-image-meta">
+                                {image.createdAt ? <span>{formatHistoryDate(image.createdAt)}</span> : null}
+                              </div>
+                              <div className="new-home-history-body">
+                                {image.prompt ? <p className="new-home-card-prompt">{image.prompt}</p> : null}
+                                <div className="new-home-history-actions">
+                                  <button
+                                    type="button"
+                                    className="new-home-card-action"
+                                    onClick={() => handleReusePrompt(image.prompt)}
+                                    aria-label="重试"
+                                    title="重试"
+                                  >
+                                    <ActionIcon name="retry" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="new-home-card-action"
+                                    onClick={() => handleReusePrompt(image.prompt)}
+                                    aria-label="复用"
+                                    title="复用"
+                                  >
+                                    <ActionIcon name="reuse" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="new-home-card-action"
+                                    onClick={() => setImageAsReference(image.filePath)}
+                                    aria-label="继续编辑"
+                                    title="继续编辑"
+                                  >
+                                    <ActionIcon name="edit" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="new-home-card-action"
+                                    onClick={() => void handleDeleteImage(image.filePath)}
+                                    aria-label="删除"
+                                    title="删除"
+                                  >
+                                    <ActionIcon name="delete" />
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                !runningPendingCards.length && !failedPendingCards.length ? <div className="new-home-empty">结果会出现在这里</div> : null
+              )}
+
+              {failedPendingCards.map((pendingCard) => {
+                return (
+                  <article key={pendingCard.taskId} className="new-home-history-card pending failed">
+                    <div
+                      className="new-home-thumb-wrap"
+                      style={{ aspectRatio: getSizeAspectRatio(pendingCard.size) }}
+                    >
+                      <div className="new-home-pending-surface">
+                        <span className="new-home-pending-time">失败</span>
+                        <p className="new-home-pending-error">{pendingCard.error || "生成失败"}</p>
+                        <div className="new-home-history-actions new-home-pending-actions">
                           <button
                             type="button"
                             className="new-home-card-action"
-                            onClick={() => handleReusePrompt(image.prompt)}
+                            onClick={() => void handleRetryFailedTask(pendingCard.taskId)}
                             aria-label="重试"
                             title="重试"
                           >
@@ -1080,25 +1235,7 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                           <button
                             type="button"
                             className="new-home-card-action"
-                            onClick={() => handleReusePrompt(image.prompt)}
-                            aria-label="复用"
-                            title="复用"
-                          >
-                            <span aria-hidden="true">↩</span>
-                          </button>
-                          <button
-                            type="button"
-                            className="new-home-card-action"
-                            onClick={() => setImageAsReference(image.filePath)}
-                            aria-label="继续编辑"
-                            title="继续编辑"
-                          >
-                            <span aria-hidden="true">✎</span>
-                          </button>
-                          <button
-                            type="button"
-                            className="new-home-card-action"
-                            onClick={() => void handleDeleteImage(image.filePath)}
+                            onClick={() => void handleDeleteFailedTask(pendingCard.taskId)}
                             aria-label="删除"
                             title="删除"
                           >
@@ -1108,10 +1245,8 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                       </div>
                     </div>
                   </article>
-                ))
-              ) : (
-                <div className="new-home-empty">结果会出现在这里</div>
-              )}
+                );
+              })}
             </section>
 
             {hasMoreHistory ? (

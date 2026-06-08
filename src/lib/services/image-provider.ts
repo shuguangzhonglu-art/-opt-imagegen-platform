@@ -47,7 +47,7 @@ type OpenAiRequestOptions = {
 };
 
 const GENERATED_DIR = path.join(process.cwd(), "public", "generated");
-const OPENAI_REQUEST_TIMEOUT_MS = Number(process.env.OPENAI_REQUEST_TIMEOUT_MS || 120000);
+const OPENAI_REQUEST_TIMEOUT_MS = Number(process.env.OPENAI_REQUEST_TIMEOUT_MS || 600000);
 const RESPONSES_RETRY_LIMIT = 2;
 const RESPONSES_POLL_INTERVAL_MS = 3000;
 const RESPONSES_POLL_TIMEOUT_MS = Number(process.env.OPENAI_RESPONSES_POLL_TIMEOUT_MS || 300000);
@@ -212,6 +212,58 @@ function shouldRetryImageFetch(error: unknown) {
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function looksLikeImageBuffer(buffer: Buffer) {
+  if (buffer.length < 12) return false;
+
+  const isPng =
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47;
+  const isJpeg = buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  const isWebp =
+    buffer.subarray(0, 4).toString("ascii") === "RIFF" &&
+    buffer.subarray(8, 12).toString("ascii") === "WEBP";
+
+  return isPng || isJpeg || isWebp;
+}
+
+function assertImageBuffer(buffer: Buffer, context: string) {
+  if (looksLikeImageBuffer(buffer)) return;
+
+  const preview = buffer
+    .subarray(0, 180)
+    .toString("utf8")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (/<html|cloudflare|error code 52\d|<!doctype/i.test(preview)) {
+    throw new Error(`${context}返回了网页错误，不是图片。请稍后重试`);
+  }
+
+  throw new Error(`${context}返回内容不是有效图片`);
+}
+
+async function readRemoteImageBuffer(response: Response, context: string) {
+  const contentType = response.headers.get("content-type")?.toLowerCase() || "";
+  const buffer = Buffer.from(await response.arrayBuffer());
+
+  if (contentType && !contentType.startsWith("image/")) {
+    assertImageBuffer(buffer, context);
+    return buffer;
+  }
+
+  assertImageBuffer(buffer, context);
+  return buffer;
+}
+
+function decodeBase64Image(base64Data: string, context: string) {
+  const normalized = base64Data.includes(",") ? base64Data.split(",").pop() || "" : base64Data;
+  const buffer = Buffer.from(normalized, "base64");
+  assertImageBuffer(buffer, context);
+  return buffer;
 }
 
 async function fetchImagesWithRetry(
@@ -524,7 +576,7 @@ async function pollResponsesImageResult(input: {
 }
 
 async function saveBase64Image(base64Data: string, fileName: string) {
-  const buffer = Buffer.from(base64Data, "base64");
+  const buffer = decodeBase64Image(base64Data, "图片接口");
   return uploadGeneratedBuffer({
     buffer,
     fileName,
@@ -778,40 +830,7 @@ async function generateViaImagesApi(
         mode: "stream",
         error: streamError instanceof Error ? streamError.message : String(streamError),
       });
-
-      const fallbackBody = JSON.stringify({
-        model,
-        prompt,
-        size,
-        quality,
-        output_format: "png",
-        moderation: "auto",
-        ...(quantity > 1 ? { n: quantity } : {}),
-        stream: false,
-      });
-      const fallbackResponse = await fetchImagesWithRetry(`${baseUrl}/images/generations`, () => ({
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: fallbackBody,
-        cache: "no-store",
-        signal: AbortSignal.timeout(OPENAI_REQUEST_TIMEOUT_MS),
-      }));
-
-      await appendDirectImageLog("upstream.fallback_response", {
-        taskId: input.taskId,
-        status: fallbackResponse.status,
-        ok: fallbackResponse.ok,
-      });
-
-      if (!fallbackResponse.ok) {
-        const rawPayload = await fallbackResponse.text();
-        throw new Error(rawPayload || `图片接口回退调用失败（${fallbackResponse.status}）`);
-      }
-
-      payload = (await fallbackResponse.json()) as ImagesApiPayload;
+      throw streamError;
     } else {
       throw streamError;
     }
@@ -836,7 +855,7 @@ async function generateViaImagesApi(
 
     if (base64Data) {
       const filePath = await uploadGeneratedBuffer({
-        buffer: Buffer.from(base64Data, "base64"),
+        buffer: decodeBase64Image(base64Data, "图片接口"),
         fileName,
       });
       results.push({
@@ -854,9 +873,9 @@ async function generateViaImagesApi(
         );
       }
       if (!fileResp.ok) throw new Error("下载图片结果失败");
-      const arrayBuffer = await fileResp.arrayBuffer();
+      const buffer = await readRemoteImageBuffer(fileResp, "远程图片");
       const filePath = await uploadGeneratedBuffer({
-        buffer: Buffer.from(arrayBuffer),
+        buffer,
         fileName,
       });
       results.push({
@@ -881,7 +900,7 @@ async function generateOpenAiImagesWithOptions(
   const hasSourceImages = Boolean(
     (input.sourceImagePaths && input.sourceImagePaths.length > 0) || input.sourceImagePath,
   );
-  const wireApi = hasSourceImages ? "responses" : options.wireApi || "images";
+  const wireApi = hasSourceImages ? "responses" : options.wireApi || process.env.OPENAI_IMAGE_WIRE_API || "images";
 
   if (wireApi === "responses") {
     try {
@@ -1125,9 +1144,9 @@ async function generateRemoteImages(input: GenerateImageInput): Promise<Generate
         );
       }
       if (!fileResp.ok) throw new Error("下载远程图片失败");
-      const arrayBuffer = await fileResp.arrayBuffer();
+      const buffer = await readRemoteImageBuffer(fileResp, "远程图片");
       const filePath = await uploadGeneratedBuffer({
-        buffer: Buffer.from(arrayBuffer),
+        buffer,
         fileName,
       });
       results.push({
@@ -1136,9 +1155,8 @@ async function generateRemoteImages(input: GenerateImageInput): Promise<Generate
         height,
       });
     } else {
-      const base64Data = item.includes(",") ? item.split(",")[1]! : item;
       const filePath = await uploadGeneratedBuffer({
-        buffer: Buffer.from(base64Data, "base64"),
+        buffer: decodeBase64Image(item, "图片接口"),
         fileName,
       });
       results.push({
