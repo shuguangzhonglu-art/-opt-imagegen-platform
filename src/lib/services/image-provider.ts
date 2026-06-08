@@ -1178,10 +1178,36 @@ export async function generateImages(input: GenerateImageInput) {
     return generateMockImages(input);
   }
 
-  return generateViaImagesApi(input, getOpenAIModel(), {
+  const model = getOpenAIModel();
+  const requestOptions = {
     apiKey: process.env.OPENAI_API_KEY,
     baseURL: process.env.OPENAI_BASE_URL || undefined,
-  });
+  };
+
+  try {
+    return await generateViaImagesApi(input, model, requestOptions);
+  } catch (imagesError) {
+    await appendDirectImageLog("upstream.fallback", {
+      taskId: input.taskId,
+      from: "images",
+      to: "responses",
+      model,
+      error: formatOpenAIError(imagesError, model),
+    });
+
+    try {
+      return await generateViaResponsesApi(input, model, requestOptions);
+    } catch (responsesError) {
+      await appendDirectImageLog("upstream.fallback_failed", {
+        taskId: input.taskId,
+        model,
+        imagesError: formatOpenAIError(imagesError, model),
+        responsesError: formatOpenAIError(responsesError, model),
+      });
+
+      throw new Error(formatOpenAIError(responsesError, model));
+    }
+  }
 }
 
 export async function generateImagesWithUserConfig(
