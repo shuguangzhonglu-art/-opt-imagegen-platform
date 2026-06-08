@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
+import { getPlatformConfig } from "@/lib/config";
 import { prisma } from "@/lib/db";
 import { hashPassword, verifyPassword } from "@/lib/password";
 
@@ -113,7 +114,10 @@ export async function authenticateUserDetailed(email: string, password: string):
   if (!valid) return { ok: false, reason: "INVALID_CREDENTIALS" };
 
   if (user.status !== "ACTIVE") return { ok: false, reason: "DISABLED" };
-  if (!user.emailVerifiedAt && user.role !== "ADMIN") return { ok: false, reason: "EMAIL_UNVERIFIED" };
+  const config = await getPlatformConfig();
+  if (config.emailVerificationEnabled && !user.emailVerifiedAt && user.role !== "ADMIN") {
+    return { ok: false, reason: "EMAIL_UNVERIFIED" };
+  }
 
   return { ok: true, user };
 }
