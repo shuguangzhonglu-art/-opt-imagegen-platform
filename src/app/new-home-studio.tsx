@@ -37,12 +37,6 @@ const PENDING_PARTICLES = Array.from({ length: 126 }, (_, index) => {
   return { x, y, size, delay };
 });
 
-function getSizeAspectRatio(size: string) {
-  const [width, height] = size.split("x").map(Number);
-  if (!width || !height) return "1 / 1";
-  return `${width} / ${height}`;
-}
-
 function getDisplayAspectRatio(size: string) {
   const [width, height] = size.split("x").map(Number);
   if (!width || !height) return "1 / 1";
@@ -1083,7 +1077,7 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                   <article key={pendingCard.taskId} className={`new-home-history-card pending ${pendingCard.status === "failed" ? "failed" : ""}`}>
                     <div
                       className="new-home-thumb-wrap"
-                      style={{ aspectRatio: getSizeAspectRatio(pendingCard.size) }}
+                      style={{ aspectRatio: getDisplayAspectRatio(pendingCard.size) }}
                     >
                       <div className="new-home-pending-surface">
                         {pendingCard.status === "running" ? (
@@ -1236,7 +1230,7 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                   <article key={pendingCard.taskId} className="new-home-history-card pending failed">
                     <div
                       className="new-home-thumb-wrap"
-                      style={{ aspectRatio: getSizeAspectRatio(pendingCard.size) }}
+                      style={{ aspectRatio: getDisplayAspectRatio(pendingCard.size) }}
                     >
                       <div className="new-home-pending-surface">
                         <span className="new-home-pending-time">失败</span>
