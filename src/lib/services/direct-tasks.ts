@@ -422,7 +422,12 @@ export async function recoverStaleDirectTasks() {
     where: { status: "PENDING" },
     select: { id: true },
   });
-  await Promise.all(tasks.map((task) => enqueueDirectGenerateTask(task.id).catch(() => null)));
+  const recoveryToken = Date.now();
+  await Promise.all(
+    tasks.map((task) =>
+      enqueueDirectGenerateTask(task.id, { jobId: `${task.id}:recovered:${recoveryToken}` }).catch(() => null),
+    ),
+  );
 
   return recovered.count;
 }
