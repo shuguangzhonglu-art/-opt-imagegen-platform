@@ -987,10 +987,10 @@ async function generateViaResponsesApi(
       tools: [
         {
           type: "image_generation",
-          model: "gpt-image-2.0",
+          model,
           action: hasSourceImages ? "edit" : "generate",
           quality: getResponsesImageQuality(input.quality),
-          size: normalizeOpenAISize(input.size, "gpt-image-2.0"),
+          size: normalizeOpenAISize(input.size, model),
           background: input.background || "auto",
           output_format: "png",
         },
@@ -1004,7 +1004,7 @@ async function generateViaResponsesApi(
       taskId: input.taskId,
       model,
       endpoint: "/v1/responses",
-      size: normalizeOpenAISize(input.size, "gpt-image-2.0"),
+      size: normalizeOpenAISize(input.size, model),
       quality: getResponsesImageQuality(input.quality),
       timeoutMs: OPENAI_REQUEST_TIMEOUT_MS,
       hasSourceImages,
