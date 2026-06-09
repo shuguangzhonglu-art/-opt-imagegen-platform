@@ -29,6 +29,7 @@ const authSchema = z.object({
 
 const registerSchema = authSchema.extend({
   displayName: z.string().trim().min(2, "用户名至少 2 个字").max(20, "用户名最多 20 个字"),
+  inviteCode: z.string().trim().optional(),
 });
 
 const codeSchema = z.object({
@@ -74,6 +75,7 @@ export async function registerAction(formData: FormData) {
     email: normalizeEmail(String(formData.get("email") ?? "")),
     displayName: String(formData.get("displayName") ?? ""),
     password: String(formData.get("password") ?? ""),
+    inviteCode: String(formData.get("inviteCode") ?? ""),
     redirectTo: String(formData.get("redirectTo") ?? "") || undefined,
   });
   const redirectTo = getSafeRedirectPath(String(formData.get("redirectTo") ?? "") || undefined);
@@ -84,6 +86,10 @@ export async function registerAction(formData: FormData) {
 
   try {
     const config = await getPlatformConfig();
+    if (config.registrationInviteEnabled && !parsed.data.inviteCode) {
+      redirect(withMessage(`/auth/register?redirectTo=${encodeURIComponent(redirectTo)}`, "error", "请输入注册邀请码"));
+    }
+
     if (config.turnstileEnabled) {
       const token = String(formData.get("cf-turnstile-response") ?? "");
       const valid = await verifyTurnstileToken(token, config.turnstileSecretKey);
@@ -103,6 +109,7 @@ export async function registerAction(formData: FormData) {
       parsed.data.email,
       parsed.data.password,
       parsed.data.displayName,
+      config.registrationInviteEnabled ? parsed.data.inviteCode : undefined,
     );
     if (!result.ok) {
       redirect(withMessage(`/auth/register?redirectTo=${encodeURIComponent(redirectTo)}`, "error", "该邮箱已注册"));
@@ -110,7 +117,13 @@ export async function registerAction(formData: FormData) {
 
     const user = result.user;
     if (!config.emailVerificationEnabled) {
-      await verifyEmailToken(await createEmailVerificationToken(user.id).then((item) => item.token), config.signupBonus);
+      await verifyEmailToken(await createEmailVerificationToken(user.id).then((item) => item.token), {
+        signupBonus: config.signupBonus,
+        signupActivityEnabled: config.signupActivityEnabled,
+        signupActivityCredits: config.signupActivityCredits,
+        signupActivityExpiresInHours: config.signupActivityExpiresInHours,
+        signupActivityInviteOnly: config.signupActivityInviteOnly,
+      });
       redirect(withMessage(`/auth/login?redirectTo=${encodeURIComponent(redirectTo)}`, "success", "注册成功，可以登录"));
     }
 
@@ -120,6 +133,9 @@ export async function registerAction(formData: FormData) {
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
       redirect(withMessage(`/auth/register?redirectTo=${encodeURIComponent(redirectTo)}`, "error", "该邮箱已注册"));
+    }
+    if (error instanceof Error && error.message.includes("邀请码")) {
+      redirect(withMessage(`/auth/register?redirectTo=${encodeURIComponent(redirectTo)}`, "error", error.message));
     }
     throw error;
   }
@@ -138,7 +154,13 @@ export async function verifyRegisterCodeAction(formData: FormData) {
   }
 
   const config = await getPlatformConfig();
-  const result = await verifyEmailCode(parsed.data.email, parsed.data.code, config.signupBonus);
+  const result = await verifyEmailCode(parsed.data.email, parsed.data.code, {
+    signupBonus: config.signupBonus,
+    signupActivityEnabled: config.signupActivityEnabled,
+    signupActivityCredits: config.signupActivityCredits,
+    signupActivityExpiresInHours: config.signupActivityExpiresInHours,
+    signupActivityInviteOnly: config.signupActivityInviteOnly,
+  });
   if (!result.ok) {
     redirect(withMessage(`/auth/register?step=verify&email=${encodeURIComponent(parsed.data.email)}&redirectTo=${encodeURIComponent(redirectTo)}`, "error", "验证码错误或已过期"));
   }
@@ -158,7 +180,13 @@ export async function verifyEmailAction(token: string) {
   }
 
   const config = await getPlatformConfig();
-  const result = await verifyEmailToken(token, config.signupBonus);
+  const result = await verifyEmailToken(token, {
+    signupBonus: config.signupBonus,
+    signupActivityEnabled: config.signupActivityEnabled,
+    signupActivityCredits: config.signupActivityCredits,
+    signupActivityExpiresInHours: config.signupActivityExpiresInHours,
+    signupActivityInviteOnly: config.signupActivityInviteOnly,
+  });
 
   if (!result.ok) {
     redirect(withMessage("/auth/login", "error", "验证链接已失效，请重新注册或联系管理员"));

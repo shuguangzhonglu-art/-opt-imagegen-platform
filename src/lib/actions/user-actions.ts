@@ -19,7 +19,7 @@ import {
   startDirectGenerateTask,
   type DirectGenerateTaskState,
 } from "@/lib/services/direct-tasks";
-import { redeemCodeForUser } from "@/lib/services/wallet";
+import { getAvailableCreditBalance, redeemCodeForUser } from "@/lib/services/wallet";
 import { normalizeStoredImageUrl } from "@/lib/services/object-storage";
 import { withMessage } from "@/lib/utils/flash";
 
@@ -205,13 +205,16 @@ export async function getCurrentUserOverviewAction() {
     where: { id: user.id },
     include: { wallet: true },
   });
-  const taskCount = await prisma.generationTask.count({ where: { userId: user.id } });
+  const [taskCount, balance] = await Promise.all([
+    prisma.generationTask.count({ where: { userId: user.id } }),
+    getAvailableCreditBalance(user.id),
+  ]);
 
   return {
     email: fresh?.email ?? user.email,
     displayName: fresh?.displayName ?? getDisplayNameFallback(),
     role: fresh?.role ?? user.role,
-    balance: fresh?.wallet?.balance ?? 0,
+    balance: balance.total,
     taskCount,
   };
 }

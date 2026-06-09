@@ -24,6 +24,11 @@ async function main() {
       taskConcurrency: 1,
       fileRetentionDays: 30,
       signupBonus: 200,
+      registrationInviteEnabled: false,
+      signupActivityEnabled: false,
+      signupActivityCredits: 0,
+      signupActivityExpiresInHours: 24,
+      signupActivityInviteOnly: true,
     },
   });
 

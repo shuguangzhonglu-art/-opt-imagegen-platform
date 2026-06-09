@@ -1,9 +1,10 @@
 import Link from "next/link";
 
 import { Notice } from "@/components/notice";
-import { adjustUserCreditsAction, toggleUserStatusAction } from "@/lib/actions/admin-actions";
+import { adjustUserCreditsAction, grantTemporaryCreditsAction, toggleUserStatusAction } from "@/lib/actions/admin-actions";
 import { requireAdmin } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { getCreditGrantSummaryByUserIds } from "@/lib/services/wallet";
 import { formatDateTime, formatNumber, formatRole, formatUserStatus } from "@/lib/utils/format";
 
 
@@ -36,7 +37,11 @@ export default async function AdminUsersPage({ searchParams }: UsersPageProps) {
       },
     },
   });
-  const totalBalance = users.reduce((sum, user) => sum + (user.wallet?.balance ?? 0), 0);
+  const grantSummary = await getCreditGrantSummaryByUserIds(users.map((user) => user.id));
+  const totalBalance = users.reduce((sum, user) => {
+    const temporary = grantSummary.get(user.id)?.temporary ?? 0;
+    return sum + (user.wallet?.balance ?? 0) + temporary;
+  }, 0);
   const userStats = await prisma.generationTask.groupBy({
     by: ["userId", "status"],
     _count: { _all: true },
@@ -108,6 +113,7 @@ export default async function AdminUsersPage({ searchParams }: UsersPageProps) {
         </label>
         <div className="toolbar-actions">
           <Link href="/admin/redeem-codes" className="ghost-button compact">兑换码</Link>
+          <Link href="/admin/campaigns" className="ghost-button compact">活动积分</Link>
           <Link href="/admin/usage" className="ghost-button compact">生成记录</Link>
           <Link href="/admin/tasks" className="ghost-button compact">任务监控</Link>
           <Link href="/admin/images" className="ghost-button compact">图片资产</Link>
@@ -148,6 +154,9 @@ export default async function AdminUsersPage({ searchParams }: UsersPageProps) {
                 success: 0,
                 failed: 0,
               };
+              const temporaryBalance = grantSummary.get(user.id)?.temporary ?? 0;
+              const earliestExpiresAt = grantSummary.get(user.id)?.earliestExpiresAt ?? null;
+              const totalUserBalance = (user.wallet?.balance ?? 0) + temporaryBalance;
 
               return (
                 <tr key={user.id}>
@@ -166,7 +175,11 @@ export default async function AdminUsersPage({ searchParams }: UsersPageProps) {
                     </span>
                   </td>
                   <td>
-                    <strong>{formatNumber(user.wallet?.balance ?? 0)}</strong>
+                    <strong>{formatNumber(totalUserBalance)}</strong>
+                    <small className="muted-cell">永久 {formatNumber(user.wallet?.balance ?? 0)} / 短期 {formatNumber(temporaryBalance)}</small>
+                    {earliestExpiresAt ? (
+                      <small className="muted-cell">最近过期 {formatDateTime(earliestExpiresAt)}</small>
+                    ) : null}
                     <Link className="inline-green" href="/admin/redeem-codes">充值</Link>
                   </td>
                   <td>
@@ -199,6 +212,13 @@ export default async function AdminUsersPage({ searchParams }: UsersPageProps) {
                           <input name="amount" type="number" placeholder="+100 / -20" required />
                           <input name="note" type="text" placeholder="备注" defaultValue="管理员调整积分" />
                           <button type="submit" className="primary-button compact">保存</button>
+                        </form>
+                        <form action={grantTemporaryCreditsAction} className="inline-admin-form">
+                          <input type="hidden" name="userId" value={user.id} />
+                          <input name="amount" type="number" min="1" placeholder="短期积分" required />
+                          <input name="expiresAt" type="datetime-local" required />
+                          <input name="note" type="text" placeholder="活动备注" defaultValue="活动短期积分" />
+                          <button type="submit" className="primary-button compact">发短期</button>
                         </form>
                         <form action={toggleUserStatusAction}>
                           <input type="hidden" name="userId" value={user.id} />

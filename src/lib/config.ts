@@ -26,6 +26,11 @@ export type PlatformConfig = {
   registerRateLimitEnabled: boolean;
   registerRateLimitWindowMinutes: number;
   registerRateLimitMax: number;
+  registrationInviteEnabled: boolean;
+  signupActivityEnabled: boolean;
+  signupActivityCredits: number;
+  signupActivityExpiresInHours: number;
+  signupActivityInviteOnly: boolean;
   adminMfaEnabled: boolean;
   adminApiKeyHash: string;
   adminApiKeyTail: string;
@@ -77,6 +82,11 @@ export async function getPlatformConfig(): Promise<PlatformConfig> {
       registerRateLimitEnabled: true,
       registerRateLimitWindowMinutes: 60,
       registerRateLimitMax: 5,
+      registrationInviteEnabled: false,
+      signupActivityEnabled: false,
+      signupActivityCredits: 0,
+      signupActivityExpiresInHours: 24,
+      signupActivityInviteOnly: true,
       adminMfaEnabled: false,
       adminApiKeyHash: "",
       adminApiKeyTail: "",
@@ -101,6 +111,11 @@ export async function getPlatformConfig(): Promise<PlatformConfig> {
     registerRateLimitEnabled: settings.registerRateLimitEnabled,
     registerRateLimitWindowMinutes: settings.registerRateLimitWindowMinutes,
     registerRateLimitMax: settings.registerRateLimitMax,
+    registrationInviteEnabled: settings.registrationInviteEnabled,
+    signupActivityEnabled: settings.signupActivityEnabled,
+    signupActivityCredits: settings.signupActivityCredits,
+    signupActivityExpiresInHours: settings.signupActivityExpiresInHours,
+    signupActivityInviteOnly: settings.signupActivityInviteOnly,
     adminMfaEnabled: settings.adminMfaEnabled,
     adminApiKeyHash: settings.adminApiKeyHash,
     adminApiKeyTail: settings.adminApiKeyTail,

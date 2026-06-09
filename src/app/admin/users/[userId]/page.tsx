@@ -1,8 +1,10 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { grantTemporaryCreditsAction } from "@/lib/actions/admin-actions";
 import { requireAdmin } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { getAvailableCreditBalance } from "@/lib/services/wallet";
 import {
   formatDateTime,
   formatNumber,
@@ -71,6 +73,18 @@ async function getUserDetail(userId: string) {
             select: {
               id: true,
               size: true,
+            },
+          },
+        },
+      },
+      creditGrants: {
+        orderBy: [{ expiresAt: "asc" }, { createdAt: "desc" }],
+        take: 12,
+        include: {
+          createdBy: {
+            select: {
+              email: true,
+              displayName: true,
             },
           },
         },
@@ -148,13 +162,14 @@ export default async function AdminUserDetailPage({ params }: AdminUserDetailPag
   const avgDuration = durations.length
     ? Math.round(durations.reduce((sum, duration) => sum + duration, 0) / durations.length)
     : null;
+  const balance = await getAvailableCreditBalance(user.id);
 
   function initial(label: string) {
     return label.trim().charAt(0).toUpperCase();
   }
 
   const cards = [
-    { label: "当前余额", value: formatNumber(user.wallet?.balance ?? 0), note: "钱包积分" },
+    { label: "当前余额", value: formatNumber(balance.total), note: `永久 ${formatNumber(balance.permanent)} / 短期 ${formatNumber(balance.temporary)}` },
     { label: "任务数", value: formatNumber(taskTotals.tasks), note: "累计生成任务" },
     { label: "图片数", value: formatNumber(user._count.images || taskTotals.images), note: "累计生成图片" },
     { label: "积分消耗", value: formatNumber(taskTotals.credits), note: "任务 totalCost 合计" },
@@ -252,6 +267,69 @@ export default async function AdminUserDetailPage({ params }: AdminUserDetailPag
             <Link href={`/admin/transactions?search=${encodeURIComponent(user.email)}`} className="ghost-button compact">查看积分流水</Link>
             <Link href={`/admin/audit-logs?targetId=${user.id}`} className="ghost-button compact">查看审计日志</Link>
             <Link href="/admin/redeem-codes" className="ghost-button compact">兑换码管理</Link>
+          </div>
+        </article>
+      </section>
+
+      <section className="usage-detail-grid">
+        <article className="usage-panel">
+          <header>
+            <div>
+              <h2>发放短期积分</h2>
+              <p>活动积分会优先于永久积分消耗。</p>
+            </div>
+          </header>
+          <form action={grantTemporaryCreditsAction} className="usage-detail-body quick-action-grid">
+            <input type="hidden" name="userId" value={user.id} />
+            <input type="hidden" name="redirectTo" value={`/admin/users/${user.id}`} />
+            <label>
+              <span>积分</span>
+              <input name="amount" type="number" min="1" placeholder="100" required />
+            </label>
+            <label>
+              <span>过期时间</span>
+              <input name="expiresAt" type="datetime-local" required />
+            </label>
+            <label>
+              <span>备注</span>
+              <input name="note" type="text" defaultValue="活动短期积分" />
+            </label>
+            <button type="submit" className="primary-button compact">发放</button>
+          </form>
+        </article>
+
+        <article className="usage-panel">
+          <header>
+            <div>
+              <h2>短期积分包</h2>
+              <p>最近 12 个积分包，过期后不再可用。</p>
+            </div>
+          </header>
+          <div className="usage-table-wrap">
+            <table className="usage-mini-table">
+              <thead>
+                <tr>
+                  <th>剩余</th>
+                  <th>总额</th>
+                  <th>过期时间</th>
+                  <th>来源</th>
+                  <th>备注</th>
+                </tr>
+              </thead>
+              <tbody>
+                {user.creditGrants.length === 0 ? (
+                  <tr><td colSpan={5} className="usage-empty-cell">暂无短期积分</td></tr>
+                ) : user.creditGrants.map((grant) => (
+                  <tr key={grant.id}>
+                    <td>{formatNumber(grant.remaining)}</td>
+                    <td>{formatNumber(grant.amount)}</td>
+                    <td>{formatDateTime(grant.expiresAt)}</td>
+                    <td>{grant.createdBy?.displayName ?? grant.createdBy?.email ?? grant.source}</td>
+                    <td className="usage-prompt-cell" title={grant.note}>{grant.note || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </article>
       </section>

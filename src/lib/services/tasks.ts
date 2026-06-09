@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 import { getPlatformConfig, getSizeCost } from "@/lib/config";
-import { adjustWalletBalance } from "@/lib/services/wallet";
+import { debitCreditsForTask, refundCreditsForTask } from "@/lib/services/wallet";
 import { generateImages } from "@/lib/services/image-provider";
 import { checkContentModeration } from "@/lib/services/risk-control";
 
@@ -28,27 +28,31 @@ export async function createGenerationTask(input: {
     prompt: input.prompt,
   });
 
-  const task = await prisma.generationTask.create({
-    data: {
-      userId: input.userId,
-      prompt: input.prompt,
-      sourceImagePath: input.sourceImagePath,
-      style: input.style,
-      size: input.size,
-      quantity: input.quantity,
-      quality: input.quality,
-      unitCost,
-      totalCost,
-      status: "PENDING",
-    },
-  });
+  const task = await prisma.$transaction(async (tx) => {
+    const created = await tx.generationTask.create({
+      data: {
+        userId: input.userId,
+        prompt: input.prompt,
+        sourceImagePath: input.sourceImagePath,
+        style: input.style,
+        size: input.size,
+        quantity: input.quantity,
+        quality: input.quality,
+        unitCost,
+        totalCost,
+        status: "PENDING",
+      },
+    });
 
-  await adjustWalletBalance({
-    userId: input.userId,
-    amount: -totalCost,
-    type: "GENERATION_DEBIT",
-    note: `提交生成任务，尺寸 ${input.size}，数量 ${input.quantity}`,
-    relatedTaskId: task.id,
+    await debitCreditsForTask({
+      tx,
+      userId: input.userId,
+      amount: totalCost,
+      taskId: created.id,
+      note: `提交生成任务，尺寸 ${input.size}，数量 ${input.quantity}`,
+    });
+
+    return created;
   });
 
   return task;
@@ -113,25 +117,12 @@ export async function processNextPendingTask() {
     return { id: nextTask.id, status: "SUCCESS" as const };
   } catch (error) {
     await prisma.$transaction(async (tx) => {
-      const wallet = await tx.wallet.findUniqueOrThrow({
-        where: { userId: nextTask.userId },
-      });
-      const nextBalance = wallet.balance + nextTask.totalCost;
-
-      await tx.wallet.update({
-        where: { userId: nextTask.userId },
-        data: { balance: nextBalance },
-      });
-
-      await tx.creditTransaction.create({
-        data: {
-          userId: nextTask.userId,
-          type: "GENERATION_REFUND",
-          amount: nextTask.totalCost,
-          balanceAfter: nextBalance,
-          relatedTaskId: nextTask.id,
-          note: "任务失败，自动返还积分",
-        },
+      await refundCreditsForTask({
+        tx,
+        userId: nextTask.userId,
+        amount: nextTask.totalCost,
+        taskId: nextTask.id,
+        note: "任务失败，自动返还积分",
       });
 
       await tx.generationTask.update({

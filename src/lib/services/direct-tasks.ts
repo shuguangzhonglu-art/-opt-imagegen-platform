@@ -14,10 +14,13 @@ import {
 import { appendDirectImageLog } from "@/lib/services/direct-log";
 import { normalizeStoredImageUrl } from "@/lib/services/object-storage";
 import { checkContentModeration } from "@/lib/services/risk-control";
+import { debitCreditsForTask, refundCreditsForTask } from "@/lib/services/wallet";
 
 export type DirectGenerateStyle = "direct" | "kv";
 
 export type DirectTaskStatus = "pending" | "running" | "succeeded" | "failed";
+const DEFAULT_DIRECT_UPSTREAM_RETRY_LIMIT = 2;
+const DEFAULT_DIRECT_UPSTREAM_RETRY_DELAY_MS = 2000;
 
 export type DirectGenerateTaskState = {
   taskId?: string;
@@ -82,6 +85,31 @@ function formatTaskError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
 
   return normalizeTaskErrorMessage(message) ?? "生成失败";
+}
+
+function getDirectUpstreamRetryLimit() {
+  const value = Number(process.env.DIRECT_UPSTREAM_RETRY_LIMIT ?? DEFAULT_DIRECT_UPSTREAM_RETRY_LIMIT);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
+function getDirectUpstreamRetryDelayMs() {
+  const value = Number(process.env.DIRECT_UPSTREAM_RETRY_DELAY_MS ?? DEFAULT_DIRECT_UPSTREAM_RETRY_DELAY_MS);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : DEFAULT_DIRECT_UPSTREAM_RETRY_DELAY_MS;
+}
+
+function shouldSilentlyRetryDirectGenerate(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (/未配置 OPENAI_API_KEY|内容审计|风险规则|提示词审核|积分不足|余额不足/i.test(message)) {
+    return false;
+  }
+
+  return true;
+}
+
+async function wait(ms: number) {
+  if (ms <= 0) return;
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function taskToState(taskId: string, userId?: string): Promise<DirectGenerateTaskState> {
@@ -185,9 +213,6 @@ export async function startDirectGenerateTask(params: {
       throw new Error(`排队任务过多，请等待当前任务完成后再提交`);
     }
 
-    const wallet = await tx.wallet.findUnique({ where: { userId: params.userId } });
-    if (!wallet) throw new Error("钱包不存在");
-
     const task = await tx.generationTask.create({
       data: {
         userId: params.userId,
@@ -205,30 +230,12 @@ export async function startDirectGenerateTask(params: {
       },
     });
 
-    const debit = await tx.wallet.updateMany({
-      where: {
-        userId: params.userId,
-        balance: { gte: cost },
-      },
-      data: {
-        balance: { decrement: cost },
-      },
-    });
-
-    if (debit.count !== 1) {
-      throw new Error(`余额不足，需要 ${cost} 积分`);
-    }
-
-    const updatedWallet = await tx.wallet.findUniqueOrThrow({ where: { userId: params.userId } });
-    await tx.creditTransaction.create({
-      data: {
-        userId: params.userId,
-        type: "GENERATION_DEBIT",
-        amount: -cost,
-        balanceAfter: updatedWallet.balance,
-        relatedTaskId: task.id,
-        note: `图片生成 ${params.size}`,
-      },
+    await debitCreditsForTask({
+      tx,
+      userId: params.userId,
+      amount: cost,
+      taskId: task.id,
+      note: `图片生成 ${params.size}`,
     });
 
     return task;
@@ -243,19 +250,12 @@ export async function startDirectGenerateTask(params: {
   } catch (error) {
     const message = error instanceof Error ? error.message : "队列提交失败";
     await prisma.$transaction(async (tx) => {
-      const wallet = await tx.wallet.update({
-        where: { userId: params.userId },
-        data: { balance: { increment: cost } },
-      });
-      await tx.creditTransaction.create({
-        data: {
-          userId: params.userId,
-          type: "GENERATION_REFUND",
-          amount: cost,
-          balanceAfter: wallet.balance,
-          relatedTaskId: created.id,
-          note: "任务入队失败，自动返还积分",
-        },
+      await refundCreditsForTask({
+        tx,
+        userId: params.userId,
+        amount: cost,
+        taskId: created.id,
+        note: "任务入队失败，自动返还积分",
       });
       await tx.generationTask.update({
         where: { id: created.id },
@@ -321,6 +321,8 @@ export async function processDirectGenerateTaskById(taskId: string) {
     promptLength: task.prompt.length,
   });
 
+  let upstreamGenerationCompleted = false;
+
   try {
     const images = await generateImages({
       prompt: task.prompt,
@@ -332,6 +334,7 @@ export async function processDirectGenerateTaskById(taskId: string) {
       quantity: task.quantity,
       taskId: task.id,
     });
+    upstreamGenerationCompleted = true;
 
     await saveDirectHistoryForUser({
       userId: task.userId,
@@ -369,26 +372,53 @@ export async function processDirectGenerateTaskById(taskId: string) {
       images: images.map((image) => image.filePath),
     });
   } catch (error) {
-    const errorMessage = formatTaskError(error);
-    const rawError =
+    let errorMessage = formatTaskError(error);
+    let rawError =
       error instanceof Error && "rawPayload" in error
         ? String((error as Error & { rawPayload?: unknown }).rawPayload ?? "")
         : undefined;
+    const retryLimit = getDirectUpstreamRetryLimit();
+    const nextRetryCount = task.retryCount + 1;
+
+    if (!upstreamGenerationCompleted && nextRetryCount <= retryLimit && shouldSilentlyRetryDirectGenerate(error)) {
+      await prisma.generationTask.update({
+        where: { id: task.id },
+        data: {
+          status: "PENDING",
+          startedAt: null,
+          finishedAt: null,
+          retryCount: { increment: 1 },
+          errorMessage: null,
+          rawError: null,
+        },
+      });
+
+      await appendDirectImageLog("task.retry_scheduled", {
+        taskId: task.id,
+        attempt: nextRetryCount,
+        retryLimit,
+        delayMs: getDirectUpstreamRetryDelayMs(),
+        error: errorMessage,
+        rawError,
+      });
+
+      await wait(getDirectUpstreamRetryDelayMs());
+      try {
+        await enqueueDirectGenerateTask(task.id, { jobId: `${task.id}:retry:${nextRetryCount}` });
+        return;
+      } catch (enqueueError) {
+        errorMessage = "任务重试入队失败，请稍后重试";
+        rawError = enqueueError instanceof Error ? enqueueError.message : String(enqueueError);
+      }
+    }
 
     await prisma.$transaction(async (tx) => {
-      const wallet = await tx.wallet.update({
-        where: { userId: task.userId },
-        data: { balance: { increment: task.totalCost } },
-      });
-      await tx.creditTransaction.create({
-        data: {
-          userId: task.userId,
-          type: "GENERATION_REFUND",
-          amount: task.totalCost,
-          balanceAfter: wallet.balance,
-          relatedTaskId: task.id,
-          note: "任务失败，自动返还积分",
-        },
+      await refundCreditsForTask({
+        tx,
+        userId: task.userId,
+        amount: task.totalCost,
+        taskId: task.id,
+        note: "任务失败，自动返还积分",
       });
       await tx.generationTask.update({
         where: { id: task.id },

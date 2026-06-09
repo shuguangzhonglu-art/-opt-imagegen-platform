@@ -5,6 +5,8 @@ import { logoutAction } from "@/lib/actions/auth-actions";
 import { redeemCodeAction, updateDisplayNameAction } from "@/lib/actions/user-actions";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { getOrCreateUserInviteCodes } from "@/lib/services/registration-invites";
+import { getAvailableCreditBalance } from "@/lib/services/wallet";
 import { formatDateTime, formatTransactionType } from "@/lib/utils/format";
 
 type CreditsPageProps = {
@@ -17,7 +19,7 @@ type CreditsPageProps = {
 export default async function CreditsPage({ searchParams }: CreditsPageProps) {
   const user = await requireUser();
   const params = (await searchParams) ?? {};
-  const [freshUser, transactions] = await Promise.all([
+  const [freshUser, transactions, balance, inviteCodes] = await Promise.all([
     prisma.user.findUnique({
       where: { id: user.id },
       include: { wallet: true },
@@ -27,6 +29,8 @@ export default async function CreditsPage({ searchParams }: CreditsPageProps) {
       orderBy: { createdAt: "desc" },
       take: 30,
     }),
+    getAvailableCreditBalance(user.id),
+    getOrCreateUserInviteCodes(user.id),
   ]);
 
   return (
@@ -45,8 +49,8 @@ export default async function CreditsPage({ searchParams }: CreditsPageProps) {
       <section className="credits-grid">
         <div className="panel credits-balance-card">
           <span>余额</span>
-          <strong>{freshUser?.wallet?.balance ?? 0}</strong>
-          <p>可用于生成图片</p>
+          <strong>{balance.total}</strong>
+          <p>永久 {balance.permanent} / 短期 {balance.temporary}</p>
         </div>
 
         <form action={updateDisplayNameAction} className="panel credits-profile-card">
@@ -79,6 +83,37 @@ export default async function CreditsPage({ searchParams }: CreditsPageProps) {
           </div>
           <button type="submit" className="ghost-button">退出</button>
         </form>
+      </section>
+
+      <section className="panel admin-table-panel">
+        <div className="credits-section-head">
+          <h2>邀请注册</h2>
+          <span>{inviteCodes.filter((code) => code.usedCount < code.maxUses && code.status === "ACTIVE").length} / 5 可用</span>
+        </div>
+        <table className="admin-table">
+          <thead>
+            <tr>
+              <th>邀请码</th>
+              <th>状态</th>
+              <th>邀请用户</th>
+              <th>使用时间</th>
+            </tr>
+          </thead>
+          <tbody>
+            {inviteCodes.map((code) => {
+              const latestUse = code.uses[0];
+              const isAvailable = code.status === "ACTIVE" && code.usedCount < code.maxUses;
+              return (
+                <tr key={code.id}>
+                  <td><code className="redeem-code-text">{code.code}</code></td>
+                  <td>{isAvailable ? "可邀请" : code.status === "DISABLED" ? "已禁用" : "已使用"}</td>
+                  <td>{latestUse?.user.displayName ?? latestUse?.user.email ?? "—"}</td>
+                  <td>{latestUse ? formatDateTime(latestUse.usedAt) : "—"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </section>
 
       <section className="panel admin-table-panel">

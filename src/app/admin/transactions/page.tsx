@@ -20,6 +20,9 @@ const validTypes = [
   "ALL",
   "SIGNUP_BONUS",
   "ADMIN_ADJUSTMENT",
+  "TEMPORARY_GRANT",
+  "CAMPAIGN_GRANT",
+  "SIGNUP_ACTIVITY",
   "REDEEM_CODE",
   "GENERATION_DEBIT",
   "GENERATION_REFUND",
@@ -121,7 +124,7 @@ export default async function AdminTransactionsPage({ searchParams }: Transactio
       <header className="sub-admin-topbar">
         <div>
           <h1>积分流水</h1>
-          <p>查看注册送积分、管理员调整、兑换码充值、生成扣费和失败退款。</p>
+          <p>查看注册送积分、活动积分、管理员调整、兑换码充值、生成扣费和失败退款。</p>
         </div>
         <div className="sub-admin-account">
           <span className="admin-avatar">{initial(admin.displayName ?? admin.email)}</span>
@@ -165,6 +168,9 @@ export default async function AdminTransactionsPage({ searchParams }: Transactio
             <option value="ALL">全部类型</option>
             <option value="SIGNUP_BONUS">注册送积分</option>
             <option value="ADMIN_ADJUSTMENT">管理员调整</option>
+            <option value="TEMPORARY_GRANT">短期积分发放</option>
+            <option value="CAMPAIGN_GRANT">活动积分发放</option>
+            <option value="SIGNUP_ACTIVITY">新用户活动奖励</option>
             <option value="REDEEM_CODE">兑换码充值</option>
             <option value="GENERATION_DEBIT">生成扣费</option>
             <option value="GENERATION_REFUND">失败退款</option>

@@ -71,6 +71,9 @@ export function formatTransactionType(type: string) {
     {
       SIGNUP_BONUS: "注册赠送",
       ADMIN_ADJUSTMENT: "管理员调整",
+      TEMPORARY_GRANT: "短期积分发放",
+      CAMPAIGN_GRANT: "活动积分发放",
+      SIGNUP_ACTIVITY: "新用户活动奖励",
       REDEEM_CODE: "卡密兑换",
       GENERATION_DEBIT: "图片生成消耗",
       GENERATION_REFUND: "生成失败返还",

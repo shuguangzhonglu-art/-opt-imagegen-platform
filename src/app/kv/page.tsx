@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { NewHomeStudio } from "../new-home-studio";
 import { getCurrentSession } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { getAvailableCreditBalance } from "@/lib/services/wallet";
 
 export const metadata: Metadata = {
   title: "电商 KV 生成 | Hemora",
@@ -15,7 +16,10 @@ export default async function KvPage() {
   if (!session) redirect("/auth/login?redirectTo=%2Fkv");
 
   const user = session.user;
-  const taskCount = await prisma.generationTask.count({ where: { userId: user.id } });
+  const [taskCount, balance] = await Promise.all([
+    prisma.generationTask.count({ where: { userId: user.id } }),
+    getAvailableCreditBalance(user.id),
+  ]);
 
   return (
     <NewHomeStudio
@@ -24,7 +28,7 @@ export default async function KvPage() {
         email: user.email,
         displayName: user.displayName ?? "我的账户",
         role: user.role,
-        balance: user.wallet?.balance ?? 0,
+        balance: balance.total,
         taskCount,
       }}
     />

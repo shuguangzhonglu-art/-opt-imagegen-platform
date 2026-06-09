@@ -8,8 +8,9 @@ import { prisma } from "@/lib/db";
 import { getPlatformConfig } from "@/lib/config";
 import { generateRedeemCodes } from "@/lib/services/redeem-codes";
 import { clearAdminMfaUnlock, createAdminApiKey, unlockAdminMfa, verifyAdminApiKey } from "@/lib/services/admin-mfa";
+import { generateRegistrationInviteCodes } from "@/lib/services/registration-invites";
 import { saveRiskControlConfig } from "@/lib/services/risk-control";
-import { adjustWalletBalance } from "@/lib/services/wallet";
+import { adjustWalletBalance, createCreditCampaignWithGrants, grantTemporaryCredits } from "@/lib/services/wallet";
 import { withMessage } from "@/lib/utils/flash";
 
 async function logAdminAction(input: {
@@ -149,6 +150,120 @@ export async function adjustUserCreditsAction(formData: FormData) {
   }
 }
 
+export async function grantTemporaryCreditsAction(formData: FormData) {
+  const admin = await requireAdmin();
+  const userId = String(formData.get("userId") ?? "");
+  const amount = Number(formData.get("amount") ?? 0);
+  const expiresAtValue = String(formData.get("expiresAt") ?? "");
+  const note = String(formData.get("note") ?? "活动短期积分").trim() || "活动短期积分";
+  const redirectTo = String(formData.get("redirectTo") ?? "/admin/users");
+
+  if (!userId || !Number.isFinite(amount) || !Number.isInteger(amount) || amount <= 0 || !expiresAtValue) {
+    redirect(withMessage(redirectTo, "error", "请输入有效的短期积分和过期时间"));
+  }
+
+  const expiresAt = new Date(expiresAtValue);
+  if (Number.isNaN(expiresAt.getTime()) || expiresAt <= new Date()) {
+    redirect(withMessage(redirectTo, "error", "短期积分过期时间必须晚于当前时间"));
+  }
+
+  try {
+    const result = await grantTemporaryCredits({
+      userId,
+      amount,
+      expiresAt,
+      note,
+      adminUserId: admin.id,
+    });
+
+    await logAdminAction({
+      adminUserId: admin.id,
+      action: "GRANT_TEMPORARY_CREDITS",
+      targetType: "user",
+      targetId: userId,
+      payload: { amount, expiresAt: expiresAt.toISOString(), balanceAfter: result.balanceAfter, note },
+    });
+
+    redirect(withMessage(redirectTo, "success", "短期积分已发放"));
+  } catch (error) {
+    unstable_rethrow(error);
+    redirect(withMessage(redirectTo, "error", error instanceof Error ? error.message : "短期积分发放失败"));
+  }
+}
+
+export async function createCreditCampaignAction(formData: FormData) {
+  const admin = await requireAdmin();
+  const name = String(formData.get("name") ?? "");
+  const description = String(formData.get("description") ?? "");
+  const creditAmount = Number(formData.get("creditAmount") ?? 0);
+  const expiresAtValue = String(formData.get("expiresAt") ?? "");
+  const audience = String(formData.get("audience") ?? "selected");
+  const recipientsRaw = String(formData.get("recipients") ?? "");
+
+  if (!name.trim() || !Number.isFinite(creditAmount) || !Number.isInteger(creditAmount) || creditAmount <= 0 || !expiresAtValue) {
+    redirect(withMessage("/admin/campaigns", "error", "活动名称、积分和过期时间不能为空"));
+  }
+
+  const expiresAt = new Date(expiresAtValue);
+  if (Number.isNaN(expiresAt.getTime()) || expiresAt <= new Date()) {
+    redirect(withMessage("/admin/campaigns", "error", "活动过期时间必须晚于当前时间"));
+  }
+
+  const recipientValues = recipientsRaw
+    .split(/[\s,;，；]+/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (audience !== "all-active" && recipientValues.length === 0) {
+    redirect(withMessage("/admin/campaigns", "error", "请填写要发放的用户邮箱或用户 ID"));
+  }
+
+  const userIds =
+    audience === "all-active"
+      ? (await prisma.user.findMany({
+          where: { status: "ACTIVE" },
+          select: { id: true },
+        })).map((user) => user.id)
+      : (await prisma.user.findMany({
+          where: {
+            OR: recipientValues.flatMap((value) => [
+              { id: value },
+              { email: { equals: value, mode: "insensitive" as const } },
+            ]),
+          },
+          select: { id: true },
+        })).map((user) => user.id);
+
+  try {
+    const result = await createCreditCampaignWithGrants({
+      name,
+      description,
+      creditAmount,
+      expiresAt,
+      userIds,
+      adminUserId: admin.id,
+    });
+
+    await logAdminAction({
+      adminUserId: admin.id,
+      action: "CREATE_CREDIT_CAMPAIGN",
+      targetType: "credit_campaign",
+      targetId: result.campaign.id,
+      payload: {
+        name,
+        creditAmount,
+        expiresAt: expiresAt.toISOString(),
+        grantedCount: result.grantedCount,
+        audience,
+      },
+    });
+
+    redirect(withMessage("/admin/campaigns", "success", `活动已创建，已发放给 ${result.grantedCount} 个用户`));
+  } catch (error) {
+    unstable_rethrow(error);
+    redirect(withMessage("/admin/campaigns", "error", error instanceof Error ? error.message : "活动创建失败"));
+  }
+}
+
 export async function toggleUserStatusAction(formData: FormData) {
   const admin = await requireAdmin();
   const userId = String(formData.get("userId") ?? "");
@@ -177,15 +292,87 @@ export async function toggleUserStatusAction(formData: FormData) {
 const codeSchema = z.object({
   batchName: z.string().min(2, "批次名称至少 2 个字符"),
   creditAmount: z.coerce.number().int().min(1, "积分面额必须大于 0"),
+  creditType: z.enum(["PERMANENT", "TEMPORARY"]).default("PERMANENT"),
+  grantExpiresInHours: z.coerce.number().int().min(1).max(8760).optional(),
   quantity: z.coerce.number().int().min(1).max(500),
   expiresAt: z.string().optional(),
 });
+
+const inviteCodeSchema = z.object({
+  batchName: z.string().min(2, "批次名称至少 2 个字符"),
+  quantity: z.coerce.number().int().min(1).max(500),
+  maxUses: z.coerce.number().int().min(1).max(10000),
+  expiresAt: z.string().optional(),
+  note: z.string().optional(),
+});
+
+export async function generateRegistrationInviteCodesAction(formData: FormData) {
+  const admin = await requireAdmin();
+  const parsed = inviteCodeSchema.safeParse({
+    batchName: String(formData.get("batchName") ?? ""),
+    quantity: Number(formData.get("quantity") ?? 1),
+    maxUses: Number(formData.get("maxUses") ?? 1),
+    expiresAt: String(formData.get("expiresAt") ?? ""),
+    note: String(formData.get("note") ?? ""),
+  });
+
+  if (!parsed.success) {
+    redirect(withMessage("/admin/invite-codes", "error", parsed.error.issues[0]?.message ?? "邀请码参数不完整"));
+  }
+
+  const codes = await generateRegistrationInviteCodes({
+    batchName: parsed.data.batchName,
+    quantity: parsed.data.quantity,
+    maxUses: parsed.data.maxUses,
+    expiresAt: parsed.data.expiresAt ? new Date(parsed.data.expiresAt) : null,
+    note: parsed.data.note,
+    adminUserId: admin.id,
+  });
+
+  await logAdminAction({
+    adminUserId: admin.id,
+    action: "GENERATE_REGISTRATION_INVITES",
+    targetType: "registration_invite_batch",
+    targetId: parsed.data.batchName,
+    payload: { quantity: codes.length, maxUses: parsed.data.maxUses, expiresAt: parsed.data.expiresAt },
+  });
+
+  redirect(
+    withMessage(
+      `/admin/invite-codes?batch=${encodeURIComponent(parsed.data.batchName)}&status=ACTIVE`,
+      "success",
+      `已生成 ${codes.length} 个注册邀请码`,
+    ),
+  );
+}
+
+export async function disableRegistrationInviteCodeAction(formData: FormData) {
+  const admin = await requireAdmin();
+  const codeId = String(formData.get("codeId") ?? "");
+
+  await prisma.registrationInviteCode.update({
+    where: { id: codeId },
+    data: { status: "DISABLED" },
+  });
+
+  await logAdminAction({
+    adminUserId: admin.id,
+    action: "DISABLE_REGISTRATION_INVITE",
+    targetType: "registration_invite_code",
+    targetId: codeId,
+    payload: {},
+  });
+
+  redirect(withMessage("/admin/invite-codes", "success", "邀请码已禁用"));
+}
 
 export async function generateRedeemCodesAction(formData: FormData) {
   const admin = await requireAdmin();
   const parsed = codeSchema.safeParse({
     batchName: String(formData.get("batchName") ?? ""),
     creditAmount: Number(formData.get("creditAmount") ?? 0),
+    creditType: String(formData.get("creditType") ?? "PERMANENT"),
+    grantExpiresInHours: Number(formData.get("grantExpiresInHours") ?? 24),
     quantity: Number(formData.get("quantity") ?? 1),
     expiresAt: String(formData.get("expiresAt") ?? ""),
   });
@@ -197,6 +384,8 @@ export async function generateRedeemCodesAction(formData: FormData) {
   const codes = await generateRedeemCodes({
     batchName: parsed.data.batchName,
     creditAmount: parsed.data.creditAmount,
+    creditType: parsed.data.creditType,
+    grantExpiresInHours: parsed.data.creditType === "TEMPORARY" ? parsed.data.grantExpiresInHours ?? 24 : null,
     quantity: parsed.data.quantity,
     expiresAt: parsed.data.expiresAt ? new Date(parsed.data.expiresAt) : null,
     adminUserId: admin.id,
@@ -207,7 +396,12 @@ export async function generateRedeemCodesAction(formData: FormData) {
     action: "GENERATE_CODES",
     targetType: "redeem_code_batch",
     targetId: parsed.data.batchName,
-    payload: { quantity: codes.length, creditAmount: parsed.data.creditAmount },
+    payload: {
+      quantity: codes.length,
+      creditAmount: parsed.data.creditAmount,
+      creditType: parsed.data.creditType,
+      grantExpiresInHours: parsed.data.grantExpiresInHours,
+    },
   });
 
   redirect(
@@ -294,6 +488,11 @@ export async function updateSecuritySettingsAction(formData: FormData) {
   const registerRateLimitEnabled = formData.get("registerRateLimitEnabled") === "on";
   const registerRateLimitWindowMinutes = Number(formData.get("registerRateLimitWindowMinutes") ?? 60);
   const registerRateLimitMax = Number(formData.get("registerRateLimitMax") ?? 5);
+  const registrationInviteEnabled = formData.get("registrationInviteEnabled") === "on";
+  const signupActivityEnabled = formData.get("signupActivityEnabled") === "on";
+  const signupActivityCredits = Number(formData.get("signupActivityCredits") ?? 0);
+  const signupActivityExpiresInHours = Number(formData.get("signupActivityExpiresInHours") ?? 24);
+  const signupActivityInviteOnly = formData.get("signupActivityInviteOnly") === "on";
 
   if (!Number.isFinite(smtpPort) || smtpPort < 1) {
     redirect(withMessage("/admin/security", "error", "SMTP 端口不合法"));
@@ -301,6 +500,10 @@ export async function updateSecuritySettingsAction(formData: FormData) {
 
   if (!Number.isFinite(registerRateLimitWindowMinutes) || registerRateLimitWindowMinutes < 1 || !Number.isFinite(registerRateLimitMax) || registerRateLimitMax < 1) {
     redirect(withMessage("/admin/security", "error", "注册限流参数不合法"));
+  }
+
+  if (!Number.isFinite(signupActivityCredits) || signupActivityCredits < 0 || !Number.isInteger(signupActivityCredits) || !Number.isFinite(signupActivityExpiresInHours) || signupActivityExpiresInHours < 1 || !Number.isInteger(signupActivityExpiresInHours)) {
+    redirect(withMessage("/admin/security", "error", "新用户活动积分参数不合法"));
   }
 
   await prisma.appSetting.upsert({
@@ -318,6 +521,11 @@ export async function updateSecuritySettingsAction(formData: FormData) {
       registerRateLimitEnabled,
       registerRateLimitWindowMinutes,
       registerRateLimitMax,
+      registrationInviteEnabled,
+      signupActivityEnabled,
+      signupActivityCredits,
+      signupActivityExpiresInHours,
+      signupActivityInviteOnly,
     },
     create: {
       id: 1,
@@ -338,6 +546,11 @@ export async function updateSecuritySettingsAction(formData: FormData) {
       registerRateLimitEnabled,
       registerRateLimitWindowMinutes,
       registerRateLimitMax,
+      registrationInviteEnabled,
+      signupActivityEnabled,
+      signupActivityCredits,
+      signupActivityExpiresInHours,
+      signupActivityInviteOnly,
     },
   });
 
@@ -357,6 +570,11 @@ export async function updateSecuritySettingsAction(formData: FormData) {
       registerRateLimitEnabled,
       registerRateLimitWindowMinutes,
       registerRateLimitMax,
+      registrationInviteEnabled,
+      signupActivityEnabled,
+      signupActivityCredits,
+      signupActivityExpiresInHours,
+      signupActivityInviteOnly,
     },
   });
 

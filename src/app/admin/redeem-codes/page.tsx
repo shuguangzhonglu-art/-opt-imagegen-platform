@@ -75,6 +75,8 @@ export default async function AdminRedeemCodesPage({ searchParams }: RedeemCodes
         id: true,
         batchName: true,
         creditAmount: true,
+        creditType: true,
+        grantExpiresInHours: true,
         status: true,
         expiresAt: true,
       },
@@ -161,6 +163,7 @@ export default async function AdminRedeemCodesPage({ searchParams }: RedeemCodes
             <small>Admin</small>
           </span>
           <Link href="/admin/transactions" className="ghost-button compact">积分流水</Link>
+          <Link href="/admin/campaigns" className="ghost-button compact">活动积分</Link>
           <Link href="/admin/audit-logs" className="ghost-button compact">操作日志</Link>
           <Link href="/studio" className="ghost-button compact">返回画布</Link>
         </div>
@@ -281,6 +284,17 @@ export default async function AdminRedeemCodesPage({ searchParams }: RedeemCodes
                 <input name="creditAmount" type="number" min="1" placeholder="100" required />
               </label>
               <label>
+                <span>类型</span>
+                <select name="creditType" defaultValue="PERMANENT">
+                  <option value="PERMANENT">永久积分</option>
+                  <option value="TEMPORARY">短期积分</option>
+                </select>
+              </label>
+              <label>
+                <span>领取后有效</span>
+                <input name="grantExpiresInHours" type="number" min="1" max="8760" defaultValue="24" />
+              </label>
+              <label>
                 <span>数量</span>
                 <input name="quantity" type="number" min="1" max="500" defaultValue="1" required />
               </label>
@@ -312,6 +326,7 @@ export default async function AdminRedeemCodesPage({ searchParams }: RedeemCodes
                 <th>兑换码</th>
                 <th>批次</th>
                 <th>面额</th>
+                <th>类型</th>
                 <th>状态</th>
                 <th>兑换用户</th>
                 <th>创建人</th>
@@ -324,12 +339,19 @@ export default async function AdminRedeemCodesPage({ searchParams }: RedeemCodes
             </thead>
             <tbody>
               {codes.length === 0 ? (
-                <tr><td colSpan={11} className="usage-empty-cell">暂无兑换码</td></tr>
+                <tr><td colSpan={12} className="usage-empty-cell">暂无兑换码</td></tr>
               ) : codes.map((code) => (
                 <tr key={code.id}>
                   <td><code className="redeem-code-text">{code.code}</code></td>
                   <td>{code.batchName}</td>
                   <td><strong>{formatNumber(code.creditAmount)}</strong></td>
+                  <td>
+                    {code.creditType === "TEMPORARY" ? (
+                      <span className="role-pill green">短期 {code.grantExpiresInHours ?? 24}h</span>
+                    ) : (
+                      <span className="role-pill">永久</span>
+                    )}
+                  </td>
                   <td><span className={`role-pill ${statusTone(code)}`}>{displayStatus(code)}</span></td>
                   <td>
                     {code.redeemedBy ? (

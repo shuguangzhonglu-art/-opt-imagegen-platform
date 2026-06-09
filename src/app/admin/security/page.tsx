@@ -157,6 +157,45 @@ export default async function AdminSecurityPage({ searchParams }: SecurityPagePr
           </div>
         </section>
 
+        <section className="security-card">
+          <div>
+            <h2>邀请码注册</h2>
+            <p>开启后，新用户注册必须填写有效邀请码；每个用户账户中心会自动拥有 5 个一次性邀请码。</p>
+          </div>
+          <label className="switch-row">
+            <span>启用邀请码注册</span>
+            <input name="registrationInviteEnabled" type="checkbox" defaultChecked={config.registrationInviteEnabled} />
+          </label>
+          <div className="toolbar-actions">
+            <Link href="/admin/invite-codes" className="ghost-button compact">邀请码管理</Link>
+          </div>
+        </section>
+
+        <section className="security-card">
+          <div>
+            <h2>新用户活动奖励</h2>
+            <p>注册完成后自动发放短期活动积分，优先消耗，到期失效。</p>
+          </div>
+          <label className="switch-row">
+            <span>启用活动奖励</span>
+            <input name="signupActivityEnabled" type="checkbox" defaultChecked={config.signupActivityEnabled} />
+          </label>
+          <label className="switch-row">
+            <span>仅邀请码注册用户可领</span>
+            <input name="signupActivityInviteOnly" type="checkbox" defaultChecked={config.signupActivityInviteOnly} />
+          </label>
+          <div className="security-grid">
+            <label>
+              <span>奖励积分</span>
+              <input name="signupActivityCredits" type="number" min="0" defaultValue={config.signupActivityCredits} />
+            </label>
+            <label>
+              <span>有效期（小时）</span>
+              <input name="signupActivityExpiresInHours" type="number" min="1" defaultValue={config.signupActivityExpiresInHours} />
+            </label>
+          </div>
+        </section>
+
         <div className="security-actions">
           <Link href="/admin/users" className="ghost-button compact">返回用户</Link>
           <Link href="/admin/risk-control" className="ghost-button compact">风控中心</Link>

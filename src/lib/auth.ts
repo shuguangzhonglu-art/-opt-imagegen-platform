@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 
+import type { Prisma } from "@prisma/client";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
@@ -7,6 +8,7 @@ import { getPlatformConfig } from "@/lib/config";
 import { prisma } from "@/lib/db";
 import { hashPassword, verifyPassword } from "@/lib/password";
 import { isAdminMfaUnlocked } from "@/lib/services/admin-mfa";
+import { claimRegistrationInviteCode } from "@/lib/services/registration-invites";
 import { adjustWalletBalance } from "@/lib/services/wallet";
 
 const SESSION_COOKIE = "flux_session";
@@ -21,6 +23,66 @@ export type AuthResult =
 
 function sha256(value: string) {
   return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+async function grantSignupActivityCredits(
+  tx: Prisma.TransactionClient,
+  input: {
+    userId: string;
+    credits: number;
+    expiresInHours: number;
+    inviteOnly: boolean;
+  },
+) {
+  if (input.credits <= 0) return;
+
+  const existingGrant = await tx.creditGrant.findFirst({
+    where: {
+      userId: input.userId,
+      source: "SIGNUP_ACTIVITY",
+    },
+    select: { id: true },
+  });
+  if (existingGrant) return;
+
+  if (input.inviteOnly) {
+    const inviteUse = await tx.registrationInviteCodeUse.findFirst({
+      where: { userId: input.userId },
+      select: { id: true },
+    });
+    if (!inviteUse) return;
+  }
+
+  const expiresAt = new Date(Date.now() + input.expiresInHours * 60 * 60 * 1000);
+  await tx.creditGrant.create({
+    data: {
+      userId: input.userId,
+      amount: input.credits,
+      remaining: input.credits,
+      source: "SIGNUP_ACTIVITY",
+      expiresAt,
+      note: "新用户活动奖励",
+    },
+  });
+
+  const wallet = await tx.wallet.findUnique({ where: { userId: input.userId } });
+  const grantSum = await tx.creditGrant.aggregate({
+    where: {
+      userId: input.userId,
+      remaining: { gt: 0 },
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+    },
+    _sum: { remaining: true },
+  });
+  await tx.creditTransaction.create({
+    data: {
+      userId: input.userId,
+      type: "SIGNUP_ACTIVITY",
+      amount: input.credits,
+      balanceAfter: (wallet?.balance ?? 0) + (grantSum._sum.remaining ?? 0),
+      note: `新用户活动奖励，有效 ${input.expiresInHours} 小时`,
+    },
+  });
 }
 
 export function normalizeEmail(email: string) {
@@ -62,44 +124,57 @@ export async function createPendingRegistrationUser(
   email: string,
   password: string,
   displayName: string,
+  inviteCode?: string,
 ) {
-  const existing = await prisma.user.findUnique({
-    where: { email },
-    include: { wallet: true },
-  });
-
-  if (existing?.emailVerifiedAt) {
-    return { ok: false as const, reason: "ALREADY_VERIFIED" as const };
-  }
-
   const passwordHash = await hashPassword(password);
-  const user = existing
-    ? await prisma.user.update({
-        where: { id: existing.id },
-        data: {
-          displayName,
-          passwordHash,
-          status: "ACTIVE",
-        },
-        include: { wallet: true },
-      })
-    : await prisma.user.create({
-        data: {
-          email,
-          displayName,
-          passwordHash,
-          wallet: {
-            create: {
-              balance: 0,
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.user.findUnique({
+      where: { email },
+      include: { wallet: true },
+    });
+
+    if (existing?.emailVerifiedAt) {
+      return { ok: false as const, reason: "ALREADY_VERIFIED" as const };
+    }
+
+    const user = existing
+      ? await tx.user.update({
+          where: { id: existing.id },
+          data: {
+            displayName,
+            passwordHash,
+            status: "ACTIVE",
+          },
+          include: { wallet: true },
+        })
+      : await tx.user.create({
+          data: {
+            email,
+            displayName,
+            passwordHash,
+            wallet: {
+              create: {
+                balance: 0,
+              },
             },
           },
-        },
-        include: {
-          wallet: true,
-        },
-      });
+          include: {
+            wallet: true,
+          },
+        });
 
-  return { ok: true as const, user };
+    if (inviteCode) {
+      const existingInviteUse = await tx.registrationInviteCodeUse.findFirst({
+        where: { userId: user.id },
+        select: { id: true },
+      });
+      if (!existingInviteUse) {
+        await claimRegistrationInviteCode(tx, inviteCode, user.id);
+      }
+    }
+
+    return { ok: true as const, user };
+  });
 }
 
 export async function authenticateUser(email: string, password: string) {
@@ -194,7 +269,13 @@ export async function createEmailVerificationCode(userId: string) {
   return { code, expiresAt };
 }
 
-export async function verifyEmailToken(token: string, signupBonus: number) {
+export async function verifyEmailToken(token: string, options: {
+  signupBonus: number;
+  signupActivityEnabled?: boolean;
+  signupActivityCredits?: number;
+  signupActivityExpiresInHours?: number;
+  signupActivityInviteOnly?: boolean;
+}) {
   const tokenHash = sha256(token);
   const now = new Date();
 
@@ -230,10 +311,10 @@ export async function verifyEmailToken(token: string, signupBonus: number) {
       },
     });
 
-    const updatedWallet = signupBonus > 0
+    const updatedWallet = options.signupBonus > 0
       ? await tx.wallet.update({
           where: { userId: record.userId },
-          data: { balance: { increment: signupBonus } },
+          data: { balance: { increment: options.signupBonus } },
         })
       : wallet;
 
@@ -242,15 +323,24 @@ export async function verifyEmailToken(token: string, signupBonus: number) {
       data: { emailVerifiedAt: now },
     });
 
-    if (signupBonus > 0) {
+    if (options.signupBonus > 0) {
       await tx.creditTransaction.create({
         data: {
           userId: record.userId,
           type: "SIGNUP_BONUS",
-          amount: signupBonus,
+          amount: options.signupBonus,
           balanceAfter: updatedWallet.balance,
           note: "邮箱验证后赠送积分",
         },
+      });
+    }
+
+    if (options.signupActivityEnabled) {
+      await grantSignupActivityCredits(tx, {
+        userId: record.userId,
+        credits: options.signupActivityCredits ?? 0,
+        expiresInHours: options.signupActivityExpiresInHours ?? 24,
+        inviteOnly: options.signupActivityInviteOnly ?? true,
       });
     }
 
@@ -258,7 +348,13 @@ export async function verifyEmailToken(token: string, signupBonus: number) {
   });
 }
 
-export async function verifyEmailCode(email: string, code: string, signupBonus: number) {
+export async function verifyEmailCode(email: string, code: string, options: {
+  signupBonus: number;
+  signupActivityEnabled?: boolean;
+  signupActivityCredits?: number;
+  signupActivityExpiresInHours?: number;
+  signupActivityInviteOnly?: boolean;
+}) {
   const normalizedEmail = normalizeEmail(email);
   const now = new Date();
 
@@ -296,10 +392,10 @@ export async function verifyEmailCode(email: string, code: string, signupBonus: 
       },
     });
 
-    const updatedWallet = signupBonus > 0
+    const updatedWallet = options.signupBonus > 0
       ? await tx.wallet.update({
           where: { userId: user.id },
-          data: { balance: { increment: signupBonus } },
+          data: { balance: { increment: options.signupBonus } },
         })
       : wallet;
 
@@ -308,15 +404,24 @@ export async function verifyEmailCode(email: string, code: string, signupBonus: 
       data: { emailVerifiedAt: now },
     });
 
-    if (signupBonus > 0) {
+    if (options.signupBonus > 0) {
       await tx.creditTransaction.create({
         data: {
           userId: user.id,
           type: "SIGNUP_BONUS",
-          amount: signupBonus,
+          amount: options.signupBonus,
           balanceAfter: updatedWallet.balance,
           note: "邮箱验证码验证后赠送积分",
         },
+      });
+    }
+
+    if (options.signupActivityEnabled) {
+      await grantSignupActivityCredits(tx, {
+        userId: user.id,
+        credits: options.signupActivityCredits ?? 0,
+        expiresInHours: options.signupActivityExpiresInHours ?? 24,
+        inviteOnly: options.signupActivityInviteOnly ?? true,
       });
     }
 

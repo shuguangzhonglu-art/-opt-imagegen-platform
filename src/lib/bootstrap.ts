@@ -46,6 +46,11 @@ export async function ensureRuntimeSetup() {
       registerRateLimitEnabled: true,
       registerRateLimitWindowMinutes: 60,
       registerRateLimitMax: 5,
+      registrationInviteEnabled: false,
+      signupActivityEnabled: false,
+      signupActivityCredits: 0,
+      signupActivityExpiresInHours: 24,
+      signupActivityInviteOnly: true,
     },
   });
 

@@ -80,6 +80,12 @@ export default async function RegisterPage({ searchParams }: RegisterPageProps) 
                 <span>密码</span>
                 <input name="password" type="password" autoComplete="new-password" placeholder="至少 8 位" minLength={8} required />
               </label>
+              {config.registrationInviteEnabled ? (
+                <label className="field">
+                  <span>邀请码</span>
+                  <input name="inviteCode" type="text" autoComplete="off" placeholder="INV-XXXXXX-XXXXXX" required />
+                </label>
+              ) : null}
               {config.turnstileEnabled ? (
                 <div className="auth-verify">
                   <div>
