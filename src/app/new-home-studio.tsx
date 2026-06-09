@@ -1182,7 +1182,7 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                         ) : (
                           <span className="new-home-pending-time">失败</span>
                         )}
-                        {pendingCard.prompt ? (
+                        {isKvMode && pendingCard.prompt ? (
                           <div className="new-home-pending-copy">
                             <strong>{pendingCard.title || "生成提示词"}</strong>
                             <p>{pendingCard.prompt}</p>
@@ -1322,7 +1322,7 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                     >
                       <div className="new-home-pending-surface">
                         <span className="new-home-pending-time">失败</span>
-                        {pendingCard.prompt ? (
+                        {isKvMode && pendingCard.prompt ? (
                           <div className="new-home-pending-copy">
                             <strong>{pendingCard.title || "生成提示词"}</strong>
                             <p>{pendingCard.prompt}</p>
