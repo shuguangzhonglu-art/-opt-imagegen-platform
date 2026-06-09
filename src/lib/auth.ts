@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { getPlatformConfig } from "@/lib/config";
 import { prisma } from "@/lib/db";
 import { hashPassword, verifyPassword } from "@/lib/password";
+import { isAdminMfaUnlocked } from "@/lib/services/admin-mfa";
 import { adjustWalletBalance } from "@/lib/services/wallet";
 
 const SESSION_COOKIE = "flux_session";
@@ -401,8 +402,11 @@ export async function requireUser() {
   return session.user;
 }
 
-export async function requireAdmin() {
+export async function requireAdmin(options?: { skipMfa?: boolean }) {
   const user = await requireUser();
   if (user.role !== "ADMIN") redirect("/");
+  if (!options?.skipMfa && !(await isAdminMfaUnlocked(user.id))) {
+    redirect("/admin/verify");
+  }
   return user;
 }

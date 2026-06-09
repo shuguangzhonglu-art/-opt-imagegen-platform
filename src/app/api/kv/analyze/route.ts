@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { NextResponse } from "next/server";
 
 import { getCurrentSession } from "@/lib/auth";
+import { appendDirectImageLog } from "@/lib/services/direct-log";
 
 const KV_SCENES = [
   { id: "01", title: "01:主KV视觉", description: "Hero Shot，严格还原产品图" },
@@ -19,33 +20,6 @@ const KV_SCENES = [
 function extractJson(value: string) {
   const match = value.match(/\{[\s\S]*\}/);
   return match?.[0] || value;
-}
-
-function fallbackPlans(input: {
-  brand: string;
-  productInfo: string;
-  extraPrompt: string;
-  visualStyle: string;
-  typography: string;
-  sceneIds: string[];
-}) {
-  const scenes = KV_SCENES.filter((scene) => input.sceneIds.includes(scene.id));
-  return scenes.map((scene) => ({
-    sceneId: scene.id,
-    title: scene.title,
-    prompt: [
-      "电商KV视觉生成任务，9:16竖版。",
-      `场景：${scene.title} / ${scene.description}`,
-      `品牌：${input.brand || "从参考图识别"}`,
-      `产品信息：${input.productInfo || "从参考图识别产品类型、规格、卖点、配色、材质和包装细节"}`,
-      `补充要求：${input.extraPrompt || "高端电商主KV，产品居中，干净背景，卖点信息可视化"}`,
-      `视觉风格：${input.visualStyle}`,
-      `排版细节：${input.typography}`,
-      "必须严格还原上传产品图，包括包装设计、颜色、LOGO位置、文字内容、图案元素、材质质感和结构比例。不得改变品牌元素。",
-      "中英文双语排版：中文标题更大，英文副标题较小；卖点用“中文 / English”格式；CTA可使用“立即选购 SHOP NOW”。",
-      "Negative prompts: wrong packaging, changed logo, inaccurate text, different colors, fake claims, unreadable typography, watermark, low quality, blurry product, distorted product, bad perspective, harsh shadow, cluttered background, duplicate product, cropped logo, extra labels, random icons, cartoonish render, plastic fake texture, inconsistent bilingual text",
-    ].join("\n"),
-  }));
 }
 
 async function fileToDataUrlPart(file: File) {
@@ -115,6 +89,18 @@ export async function POST(request: Request) {
     'JSON格式：{"report":"识别报告文本","plans":[{"sceneId":"01","title":"01:主KV视觉","prompt":"完整图片生成prompt"}]}',
   ].join("\n");
 
+  await appendDirectImageLog("kv.analyze.request", {
+    userId: session.user.id,
+    model,
+    baseURL: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+    sceneIds,
+    productImageCount: productImages.length,
+    logoImageCount: logoFiles.length,
+    brandProvided: Boolean(brand),
+    productInfoLength: productInfo.length,
+    extraPromptLength: extraPrompt.length,
+  });
+
   try {
     const completion = await client.chat.completions.create({
       model,
@@ -128,21 +114,56 @@ export async function POST(request: Request) {
     });
     const raw = completion.choices[0]?.message?.content || "";
     const parsed = JSON.parse(extractJson(raw)) as { report?: string; plans?: Array<{ sceneId: string; title: string; prompt: string }> };
-    const plans = Array.isArray(parsed.plans) && parsed.plans.length
-      ? parsed.plans.filter((plan) => sceneIds.includes(plan.sceneId))
-      : fallbackPlans({ brand, productInfo, extraPrompt, visualStyle, typography, sceneIds });
+    const plans = Array.isArray(parsed.plans)
+      ? parsed.plans.filter((plan) => sceneIds.includes(plan.sceneId) && plan.prompt?.trim())
+      : [];
+
+    if (!raw.trim() || !plans.length) {
+      await appendDirectImageLog("kv.analyze.invalid_response", {
+        userId: session.user.id,
+        model,
+        rawLength: raw.length,
+        planCount: plans.length,
+      });
+      return NextResponse.json(
+        {
+          error: "LLM没有返回有效的KV分析结果",
+          report: parsed.report || "",
+          plans: [],
+          model,
+          source: "llm_failed",
+        },
+        { status: 502 },
+      );
+    }
+
+    await appendDirectImageLog("kv.analyze.succeeded", {
+      userId: session.user.id,
+      model,
+      planCount: plans.length,
+      rawLength: raw.length,
+    });
 
     return NextResponse.json({
       report: parsed.report || "已完成商品识别和KV场景提示词生成。",
       plans,
       model,
+      source: "llm",
     });
   } catch (error) {
+    await appendDirectImageLog("kv.analyze.failed", {
+      userId: session.user.id,
+      model,
+      error: error instanceof Error ? error.message : String(error),
+    });
+
     return NextResponse.json(
       {
         error: error instanceof Error ? error.message : "KV分析失败",
         report: "",
-        plans: fallbackPlans({ brand, productInfo, extraPrompt, visualStyle, typography, sceneIds }),
+        plans: [],
+        model,
+        source: "llm_failed",
       },
       { status: 500 },
     );

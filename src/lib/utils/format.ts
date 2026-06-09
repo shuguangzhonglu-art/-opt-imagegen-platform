@@ -1,7 +1,28 @@
+export function getBeijingTodayStart() {
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+
+  return new Date(Date.UTC(Number(value.year), Number(value.month) - 1, Number(value.day), -8, 0, 0));
+}
+
+export function getAdminRangeStart(range: string) {
+  if (range === "all") return undefined;
+  if (range === "today") return getBeijingTodayStart();
+
+  const hours = range === "7d" ? 24 * 7 : range === "30d" ? 24 * 30 : 24;
+  return new Date(Date.now() - hours * 60 * 60 * 1000);
+}
+
 export function formatDateTime(value: Date | string | null | undefined) {
   if (!value) return "—";
   const date = typeof value === "string" ? new Date(value) : value;
   return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",

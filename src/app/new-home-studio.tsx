@@ -167,6 +167,8 @@ type PendingCard = {
   status: "running" | "failed";
   error?: string;
   isLocal?: boolean;
+  title?: string;
+  prompt?: string;
 };
 
 type ReferenceItem = {
@@ -187,6 +189,14 @@ type KvPromptPlan = {
   sceneId: string;
   title: string;
   prompt: string;
+};
+
+type KvAnalyzePayload = {
+  error?: string;
+  report?: string;
+  plans?: KvPromptPlan[];
+  model?: string;
+  source?: "llm" | "llm_failed";
 };
 
 type UserOverview = {
@@ -241,11 +251,11 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
   const [kvTypography, setKvTypography] = useState("AI自动匹配");
   const [kvPlans, setKvPlans] = useState<KvPromptPlan[]>([]);
   const [kvReport, setKvReport] = useState("");
+  const [kvAnalysisMeta, setKvAnalysisMeta] = useState<{ model?: string; source?: string } | null>(null);
   const [isAnalyzingKv, setIsAnalyzingKv] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const logoInputRef = useRef<HTMLInputElement | null>(null);
   const resultPanelRef = useRef<HTMLElement | null>(null);
-  const selectedKvPlans = kvPlans.filter((plan) => selectedSceneIds.includes(plan.sceneId));
 
   async function refreshUserOverview() {
     try {
@@ -284,6 +294,7 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
               size: task.submitted?.size || "1024x1024",
               status: task.status === "failed" ? "failed" : "running",
               error: task.error,
+              prompt: task.submitted?.prompt,
             })),
         );
         setActiveTaskIds(
@@ -506,15 +517,15 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
     setSelectedSceneIds(KV_SCENES.map((scene) => scene.id));
   }
 
-  async function analyzeKvAgent() {
-    if (!isKvMode || isAnalyzingKv) return;
+  async function analyzeKvAgent(): Promise<KvPromptPlan[]> {
+    if (!isKvMode || isAnalyzingKv) return [];
     if (!selectedSceneIds.length) {
       setSubmitMessage("请至少选择一个场景");
-      return;
+      return [];
     }
     if (!referenceItems.some((item) => item.file) && !kvInfo.trim()) {
       setSubmitMessage("请上传商品图，或填写商品信息");
-      return;
+      return [];
     }
 
     setSubmitMessage("");
@@ -540,18 +551,25 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
         method: "POST",
         body: formData,
       });
-      const payload = await response.json();
+      const payload = (await response.json()) as KvAnalyzePayload;
       const plans = Array.isArray(payload.plans) ? (payload.plans as KvPromptPlan[]) : [];
-      if (!response.ok && !plans.length) {
-        throw new Error(payload?.error || "KV分析失败");
+      if (!response.ok || payload.source !== "llm" || !plans.length) {
+        setKvReport(payload.report || "");
+        setKvPlans([]);
+        setKvAnalysisMeta({ model: payload.model, source: payload.source || "llm_failed" });
+        throw new Error(payload?.error || "LLM没有返回真实KV分析结果");
       }
+
+      const selectedPlans = plans.filter((plan) => selectedSceneIds.includes(plan.sceneId));
       setKvReport(payload.report || "已完成商品识别和场景提示词生成。");
-      setKvPlans(plans.filter((plan) => selectedSceneIds.includes(plan.sceneId)));
-      setSubmitMessage(response.ok ? "分析完成，选择场景后可提交队列" : `主站模型分析失败，已生成基础提示词：${payload?.error || ""}`);
+      setKvPlans(selectedPlans);
+      setKvAnalysisMeta({ model: payload.model, source: payload.source });
+      setSubmitMessage(`LLM真实分析完成${payload.model ? `：${payload.model}` : ""}，正在提交队列`);
+      return selectedPlans;
     } catch (error) {
-      setKvReport("");
       setKvPlans([]);
       setSubmitMessage(error instanceof Error ? error.message : "KV分析失败");
+      return [];
     } finally {
       setIsAnalyzingKv(false);
     }
@@ -560,6 +578,32 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
   function handleReusePrompt(nextPrompt?: string) {
     if (!nextPrompt) return;
     setPrompt(nextPrompt);
+  }
+
+  async function handleDownloadImage(filePath: string) {
+    try {
+      const response = await fetch(filePath, { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error("下载失败");
+      }
+
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      const extensionMatch = filePath.match(/\.(png|jpe?g|webp|svg)(?:$|\?)/i);
+      const extension = extensionMatch?.[1]?.toLowerCase() || "png";
+      const pathName = filePath.split("?")[0]?.split("/").filter(Boolean).pop();
+      const baseName = pathName?.replace(/\.(png|jpe?g|webp|svg)$/i, "") || "imagegen";
+
+      anchor.href = blobUrl;
+      anchor.download = `${baseName}.${extension === "jpg" ? "jpeg" : extension}`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+    } catch {
+      window.alert("下载失败，请稍后重试");
+    }
   }
 
   async function handleDeleteImage(filePath: string) {
@@ -611,6 +655,7 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
           startedAt: task.createdAt ?? Date.now(),
           size: task.submitted?.size || "1024x1024",
           status: "running",
+          prompt: task.submitted?.prompt,
         },
         ...filtered,
       ];
@@ -618,17 +663,23 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
     setActiveTaskIds((current) => [...current.filter((id) => id !== taskId), task.taskId as string]);
   }
 
-  async function submitGenerateFormData(formData: FormData) {
+  async function submitGenerateFormData(
+    formData: FormData,
+    pendingMeta?: Pick<PendingCard, "title" | "prompt">,
+    options?: { manageSubmitting?: boolean },
+  ) {
+    const manageSubmitting = options?.manageSubmitting ?? true;
     setState({});
     setSubmitMessage("");
-    setIsSubmitting(true);
+    if (manageSubmitting) setIsSubmitting(true);
 
     formData.delete("sourceImagePaths");
     referenceItems
       .filter((item) => item.sourcePath)
       .forEach((item) => formData.append("sourceImagePaths", item.sourcePath as string));
     const submittedSize = formData.get("size")?.toString() || size;
-    const localTaskId = `local-${Date.now()}`;
+    const submittedPrompt = pendingMeta?.prompt || formData.get("prompt")?.toString() || "";
+    const localTaskId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     setPendingCards((current) => [
       {
@@ -637,6 +688,8 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
         size: submittedSize,
         status: "running",
         isLocal: true,
+        title: pendingMeta?.title,
+        prompt: submittedPrompt,
       },
       ...current,
     ]);
@@ -654,7 +707,7 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
         body: formData,
       });
     } catch {
-      setIsSubmitting(false);
+      if (manageSubmitting) setIsSubmitting(false);
       setSubmitMessage("提交失败，请检查网络后重试");
       setPendingCards((current) => [
         {
@@ -663,6 +716,8 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
           size: submittedSize,
           status: "failed",
           error: "提交失败，请检查网络后重试",
+          title: pendingMeta?.title,
+          prompt: submittedPrompt,
         },
         ...current.filter((card) => card.taskId !== localTaskId),
       ]);
@@ -673,7 +728,7 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
     try {
       task = (await response.json()) as DirectGenerateTaskState;
     } catch {
-      setIsSubmitting(false);
+      if (manageSubmitting) setIsSubmitting(false);
       setSubmitMessage("服务返回异常，请稍后重试");
       setPendingCards((current) => [
         {
@@ -682,13 +737,15 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
           size: submittedSize,
           status: "failed",
           error: "服务返回异常，请稍后重试",
+          title: pendingMeta?.title,
+          prompt: submittedPrompt,
         },
         ...current.filter((card) => card.taskId !== localTaskId),
       ]);
       return;
     }
 
-    setIsSubmitting(false);
+    if (manageSubmitting) setIsSubmitting(false);
     setSubmitMessage("已提交，正在生成");
     void refreshUserOverview();
 
@@ -702,6 +759,8 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
           size: submittedSize,
           status: "failed",
           error: task.error || "生成失败",
+          title: pendingMeta?.title,
+          prompt: task.submitted?.prompt || submittedPrompt,
         },
         ...current.filter((card) => card.taskId !== localTaskId),
       ]);
@@ -717,6 +776,8 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
               startedAt: Date.now(),
               size: submittedSize,
               status: "running",
+              title: pendingMeta?.title,
+              prompt: task.submitted?.prompt || submittedPrompt,
             }
           : card,
       ),
@@ -726,22 +787,28 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const baseFormData = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const baseFormData = new FormData(formElement);
 
     if (isKvMode) {
-      if (!selectedKvPlans.length) {
-        setSubmitMessage("请先分析生成KV提示词，再提交队列");
+      const analyzedPlans = await analyzeKvAgent();
+      if (!analyzedPlans.length) {
         return;
       }
 
-      for (const plan of selectedKvPlans) {
-        const formData = new FormData(event.currentTarget);
-        formData.set("prompt", plan.prompt);
-        formData.set("size", "1024x1792");
-        formData.set("generationStyle", "kv");
-        await submitGenerateFormData(formData);
+      setIsSubmitting(true);
+      try {
+        for (const plan of analyzedPlans) {
+          const formData = new FormData(formElement);
+          formData.set("prompt", plan.prompt);
+          formData.set("size", "1024x1792");
+          formData.set("generationStyle", "kv");
+          await submitGenerateFormData(formData, { title: plan.title, prompt: plan.prompt }, { manageSubmitting: false });
+        }
+      } finally {
+        setIsSubmitting(false);
       }
-      setSubmitMessage(`已提交 ${selectedKvPlans.length} 个KV场景到队列`);
+      setSubmitMessage(`已完成LLM分析，并提交 ${analyzedPlans.length} 个KV场景到队列`);
       return;
     }
 
@@ -785,13 +852,13 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
 
           <div className="new-home-keybox">
             <div className="new-home-userbox">
-              <a href="/credits" className="new-home-profile-link" aria-label="账户中心">
+              <Link href="/credits" className="new-home-profile-link" aria-label="账户中心">
                 <span className="new-home-user-avatar">{userOverview.displayName.slice(0, 1).toUpperCase()}</span>
                 <span className="new-home-user-name">{userOverview.displayName}</span>
-              </a>
+              </Link>
               <strong>{userOverview.balance} 积分</strong>
               {userOverview.role === "ADMIN" ? (
-                <a href="/admin/users" className="new-home-admin-link">用户</a>
+                <Link href="/admin/users" className="new-home-admin-link">用户</Link>
               ) : null}
             </div>
           </div>
@@ -804,7 +871,7 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                 <p className="new-home-panel-kicker">{isKvMode ? "AGENT INPUT" : "INPUT"}</p>
                 <h2 className="new-home-panel-title">{isKvMode ? "电商KV" : "直接生成"}</h2>
               </div>
-              {isKvMode ? <a href="/studio" className="new-home-mode-link">普通生成</a> : <a href="/kv" className="new-home-mode-link">KV入口</a>}
+              {isKvMode ? <Link href="/studio" className="new-home-mode-link">普通生成</Link> : <Link href="/kv" className="new-home-mode-link">KV入口</Link>}
             </div>
 
             {isKvMode ? (
@@ -942,6 +1009,12 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                   </label>
                 </section>
 
+                {kvAnalysisMeta ? (
+                  <div className={`kv-analysis-badge ${kvAnalysisMeta.source === "llm" ? "ok" : "failed"}`}>
+                    <strong>{kvAnalysisMeta.source === "llm" ? "真实 LLM 分析" : "LLM 分析失败"}</strong>
+                    {kvAnalysisMeta.model ? <span>{kvAnalysisMeta.model}</span> : null}
+                  </div>
+                ) : null}
                 {kvReport ? <pre className="kv-report">{kvReport}</pre> : null}
                 {kvPlans.length ? (
                   <div className="kv-plan-list">
@@ -1031,22 +1104,24 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                 </div>
               </div>
 
-              {isKvMode ? (
-                <button
-                  type="button"
-                  className="new-home-agent-button"
-                  onClick={() => void analyzeKvAgent()}
-                  disabled={isAnalyzingKv || isSubmitting}
-                >
-                  {isAnalyzingKv ? "分析中..." : "分析生成提示词"}
-                </button>
-              ) : null}
               <button
                 className="new-home-generate"
                 type="submit"
-                disabled={isSubmitting || (isKvMode ? !selectedKvPlans.length : prompt.trim().length < 8)}
+                disabled={
+                  isSubmitting ||
+                  isAnalyzingKv ||
+                  (isKvMode
+                    ? !selectedSceneIds.length || (!referenceItems.some((item) => item.file) && !kvInfo.trim())
+                    : prompt.trim().length < 8)
+                }
               >
-                {isSubmitting ? "提交中..." : isKvMode ? `提交 ${selectedKvPlans.length || selectedSceneIds.length} 个场景到队列` : "立即生成"}
+                {isAnalyzingKv
+                  ? "LLM分析中..."
+                  : isSubmitting
+                    ? "提交中..."
+                    : isKvMode
+                      ? `提交 ${selectedSceneIds.length} 个场景到队列`
+                      : "立即生成"}
               </button>
               {submitMessage ? <p className="new-home-submit-hint">{submitMessage}</p> : null}
             </div>
@@ -1107,6 +1182,12 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                         ) : (
                           <span className="new-home-pending-time">失败</span>
                         )}
+                        {pendingCard.prompt ? (
+                          <div className="new-home-pending-copy">
+                            <strong>{pendingCard.title || "生成提示词"}</strong>
+                            <p>{pendingCard.prompt}</p>
+                          </div>
+                        ) : null}
                         {pendingCard.status === "failed" ? (
                           <>
                             <p className="new-home-pending-error">{pendingCard.error || "生成失败"}</p>
@@ -1165,16 +1246,18 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                                   loading={eagerIndex < 6 ? "eager" : "lazy"}
                                 />
                               </button>
-                              <a
-                                href={image.filePath}
-                                download
+                              <button
+                                type="button"
                                 className="new-home-card-download"
                                 aria-label="下载"
                                 title="下载"
-                                onClick={(event) => event.stopPropagation()}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void handleDownloadImage(image.filePath);
+                                }}
                               >
                                 <ActionIcon name="download" />
-                              </a>
+                              </button>
                               <div className="new-home-image-meta">
                                 {image.createdAt ? <span>{formatHistoryDate(image.createdAt)}</span> : null}
                               </div>
@@ -1239,6 +1322,12 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                     >
                       <div className="new-home-pending-surface">
                         <span className="new-home-pending-time">失败</span>
+                        {pendingCard.prompt ? (
+                          <div className="new-home-pending-copy">
+                            <strong>{pendingCard.title || "生成提示词"}</strong>
+                            <p>{pendingCard.prompt}</p>
+                          </div>
+                        ) : null}
                         <p className="new-home-pending-error">{pendingCard.error || "生成失败"}</p>
                         <div className="new-home-history-actions new-home-pending-actions">
                           <button
@@ -1288,16 +1377,18 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
             >
               ×
             </button>
-            <a
-              href={lightboxImage.filePath}
-              download
+            <button
+              type="button"
               className="new-home-lightbox-download"
               aria-label="下载"
               title="下载"
-              onClick={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                void handleDownloadImage(lightboxImage.filePath);
+              }}
             >
-              D
-            </a>
+              <ActionIcon name="download" />
+            </button>
             <div className="new-home-lightbox-image-wrap" onClick={(event) => event.stopPropagation()}>
               <Image
                 src={lightboxImage.filePath}

@@ -18,6 +18,7 @@ declare global {
 }
 
 export async function ensureRuntimeSetup() {
+  if (process.env.NEXT_PHASE === "phase-production-build") return;
   if (global.__bootstrapStarted) return;
   global.__bootstrapStarted = true;
 

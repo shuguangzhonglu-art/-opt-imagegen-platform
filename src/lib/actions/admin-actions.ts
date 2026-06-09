@@ -7,6 +7,7 @@ import { requireAdmin } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { getPlatformConfig } from "@/lib/config";
 import { generateRedeemCodes } from "@/lib/services/redeem-codes";
+import { clearAdminMfaUnlock, createAdminApiKey, unlockAdminMfa, verifyAdminApiKey } from "@/lib/services/admin-mfa";
 import { saveRiskControlConfig } from "@/lib/services/risk-control";
 import { adjustWalletBalance } from "@/lib/services/wallet";
 import { withMessage } from "@/lib/utils/flash";
@@ -27,6 +28,92 @@ async function logAdminAction(input: {
       payload: JSON.stringify(input.payload),
     },
   });
+}
+
+export async function generateAdminApiKeyAction() {
+  const admin = await requireAdmin();
+  const key = createAdminApiKey();
+
+  await prisma.appSetting.upsert({
+    where: { id: 1 },
+    update: {
+      adminMfaEnabled: true,
+      adminApiKeyHash: key.hash,
+      adminApiKeyTail: key.tail,
+    },
+    create: {
+      id: 1,
+      defaultUnitCost: 40,
+      availableSizes: "1024x1024:40,1024x1536:60,1536x1024:60,1024x1792:80,1792x1024:80",
+      taskConcurrency: 1,
+      fileRetentionDays: 30,
+      signupBonus: 200,
+      adminMfaEnabled: true,
+      adminApiKeyHash: key.hash,
+      adminApiKeyTail: key.tail,
+    },
+  });
+
+  await unlockAdminMfa(admin.id);
+
+  await logAdminAction({
+    adminUserId: admin.id,
+    action: "GENERATE_ADMIN_API_KEY",
+    targetType: "settings",
+    targetId: "admin_mfa",
+    payload: { tail: key.tail },
+  });
+
+  redirect(withMessage(`/admin/security?newAdminKey=${encodeURIComponent(key.secret)}`, "success", "管理员密钥已生成，请立即保存。"));
+}
+
+export async function disableAdminApiKeyAction() {
+  const admin = await requireAdmin();
+
+  await prisma.appSetting.upsert({
+    where: { id: 1 },
+    update: {
+      adminMfaEnabled: false,
+      adminApiKeyHash: "",
+      adminApiKeyTail: "",
+    },
+    create: {
+      id: 1,
+      defaultUnitCost: 40,
+      availableSizes: "1024x1024:40,1024x1536:60,1536x1024:60,1024x1792:80,1792x1024:80",
+      taskConcurrency: 1,
+      fileRetentionDays: 30,
+      signupBonus: 200,
+      adminMfaEnabled: false,
+      adminApiKeyHash: "",
+      adminApiKeyTail: "",
+    },
+  });
+
+  await clearAdminMfaUnlock();
+
+  await logAdminAction({
+    adminUserId: admin.id,
+    action: "DISABLE_ADMIN_API_KEY",
+    targetType: "settings",
+    targetId: "admin_mfa",
+    payload: {},
+  });
+
+  redirect(withMessage("/admin/security", "success", "管理员二次验证密钥已关闭"));
+}
+
+export async function verifyAdminApiKeyAction(formData: FormData) {
+  const admin = await requireAdmin({ skipMfa: true });
+  const secret = String(formData.get("adminApiKey") ?? "");
+  const redirectTo = String(formData.get("redirectTo") ?? "/admin");
+
+  if (!secret || !(await verifyAdminApiKey(secret))) {
+    redirect(withMessage(`/admin/verify?redirectTo=${encodeURIComponent(redirectTo)}`, "error", "管理员密钥错误"));
+  }
+
+  await unlockAdminMfa(admin.id);
+  redirect(redirectTo.startsWith("/admin") ? redirectTo : "/admin");
 }
 
 export async function adjustUserCreditsAction(formData: FormData) {
@@ -123,7 +210,13 @@ export async function generateRedeemCodesAction(formData: FormData) {
     payload: { quantity: codes.length, creditAmount: parsed.data.creditAmount },
   });
 
-  redirect(withMessage("/admin/redeem-codes", "success", `已生成 ${codes.length} 张卡券`));
+  redirect(
+    withMessage(
+      `/admin/redeem-codes?batch=${encodeURIComponent(parsed.data.batchName)}&status=UNUSED`,
+      "success",
+      `已生成 ${codes.length} 张卡券，可直接下载当前批次`,
+    ),
+  );
 }
 
 export async function disableRedeemCodeAction(formData: FormData) {

@@ -6,6 +6,8 @@ import { requireAdmin } from "@/lib/auth";
 import { getRiskControlLogs, getRiskControlStatus } from "@/lib/services/risk-control";
 import { formatDateTime } from "@/lib/utils/format";
 
+
+export const dynamic = "force-dynamic";
 type RiskControlPageProps = {
   searchParams?: Promise<{
     error?: string;

@@ -26,6 +26,9 @@ export type PlatformConfig = {
   registerRateLimitEnabled: boolean;
   registerRateLimitWindowMinutes: number;
   registerRateLimitMax: number;
+  adminMfaEnabled: boolean;
+  adminApiKeyHash: string;
+  adminApiKeyTail: string;
 };
 
 const DEFAULT_SIZES = "1024x1024:40,1024x1536:60,1536x1024:60,1024x1792:80,1792x1024:80";
@@ -74,6 +77,9 @@ export async function getPlatformConfig(): Promise<PlatformConfig> {
       registerRateLimitEnabled: true,
       registerRateLimitWindowMinutes: 60,
       registerRateLimitMax: 5,
+      adminMfaEnabled: false,
+      adminApiKeyHash: "",
+      adminApiKeyTail: "",
     };
   }
 
@@ -95,6 +101,9 @@ export async function getPlatformConfig(): Promise<PlatformConfig> {
     registerRateLimitEnabled: settings.registerRateLimitEnabled,
     registerRateLimitWindowMinutes: settings.registerRateLimitWindowMinutes,
     registerRateLimitMax: settings.registerRateLimitMax,
+    adminMfaEnabled: settings.adminMfaEnabled,
+    adminApiKeyHash: settings.adminApiKeyHash,
+    adminApiKeyTail: settings.adminApiKeyTail,
   };
 }
 

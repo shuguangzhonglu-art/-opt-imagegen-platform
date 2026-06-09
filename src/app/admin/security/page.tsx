@@ -1,14 +1,17 @@
 import Link from "next/link";
 
 import { Notice } from "@/components/notice";
-import { updateSecuritySettingsAction } from "@/lib/actions/admin-actions";
+import { disableAdminApiKeyAction, generateAdminApiKeyAction, updateSecuritySettingsAction } from "@/lib/actions/admin-actions";
 import { requireAdmin } from "@/lib/auth";
 import { getPlatformConfig } from "@/lib/config";
 
+
+export const dynamic = "force-dynamic";
 type SecurityPageProps = {
   searchParams?: Promise<{
     error?: string;
     success?: string;
+    newAdminKey?: string;
   }>;
 };
 
@@ -36,6 +39,40 @@ export default async function AdminSecurityPage({ searchParams }: SecurityPagePr
 
       <Notice type="error" message={params.error} />
       <Notice type="success" message={params.success} />
+
+      <div className="security-settings">
+        <section className="security-card">
+          <div>
+            <h2>管理员二次验证密钥</h2>
+            <p>开启后，管理员登录后台还必须输入密钥。密钥只显示一次，系统只保存哈希和尾号。</p>
+          </div>
+          {params.newAdminKey ? (
+            <div className="admin-secret-reveal">
+              <strong>请立即保存这个密钥，刷新后不再显示：</strong>
+              <code>{params.newAdminKey}</code>
+            </div>
+          ) : null}
+          <div className="admin-key-status-card">
+            <div>
+              <span>当前状态</span>
+              <strong>{config.adminMfaEnabled && config.adminApiKeyTail ? "已启用" : "未启用"}</strong>
+              <small>{config.adminApiKeyTail ? `密钥尾号 ...${config.adminApiKeyTail}` : "尚未生成管理员密钥"}</small>
+            </div>
+            <div className="toolbar-actions">
+              <form action={generateAdminApiKeyAction}>
+                <button className="primary-button compact" type="submit">
+                  {config.adminApiKeyTail ? "重新生成" : "生成密钥"}
+                </button>
+              </form>
+              {config.adminApiKeyTail ? (
+                <form action={disableAdminApiKeyAction}>
+                  <button className="ghost-button compact danger-button" type="submit">关闭</button>
+                </form>
+              ) : null}
+            </div>
+          </div>
+        </section>
+      </div>
 
       <form action={updateSecuritySettingsAction} className="security-settings">
         <section className="security-card">
