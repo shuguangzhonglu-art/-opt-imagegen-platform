@@ -63,7 +63,7 @@ DATABASE_URL="postgresql://imagegen:imagegen@127.0.0.1:5432/imagegen"
 REDIS_URL="redis://127.0.0.1:6379"
 DIRECT_WORKER_CONCURRENCY="10"
 USER_PENDING_LIMIT="20"
-OPENAI_BASE_URL="https://hemasir.online/v1"
+OPENAI_BASE_URL="http://127.0.0.1:8080/v1"
 ```
 
 ## 部署

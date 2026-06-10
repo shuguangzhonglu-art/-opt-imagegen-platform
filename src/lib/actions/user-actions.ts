@@ -8,7 +8,6 @@ import { prisma } from "@/lib/db";
 import {
   DIRECT_HISTORY_PAGE_SIZE,
   deleteDirectHistoryByUserIdAndFilePath,
-  getDirectHistoryByUserId,
   type DirectHistoryImage,
 } from "@/lib/services/direct-history";
 import {
@@ -20,7 +19,7 @@ import {
   type DirectGenerateTaskState,
 } from "@/lib/services/direct-tasks";
 import { getAvailableCreditBalance, redeemCodeForUser } from "@/lib/services/wallet";
-import { normalizeStoredImageUrl } from "@/lib/services/object-storage";
+import { getGeneratedImagePathCandidates, normalizeStoredImageUrl } from "@/lib/services/object-storage";
 import { withMessage } from "@/lib/utils/flash";
 
 const generateSchema = z.object({
@@ -223,7 +222,34 @@ export async function getDirectHistoryAction(
   options?: { offset?: number; limit?: number },
 ): Promise<DirectHistoryImage[]> {
   const user = await requireUser();
-  return getDirectHistoryByUserId(user.id, options);
+  const records = await prisma.generatedImage.findMany({
+    where: {
+      userId: user.id,
+      task: {
+        style: "direct",
+      },
+    },
+    include: {
+      task: {
+        select: {
+          prompt: true,
+          size: true,
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    skip: options?.offset ?? 0,
+    take: options?.limit ?? DIRECT_HISTORY_PAGE_SIZE,
+  });
+
+  return records.map((record) => ({
+    filePath: normalizeStoredImageUrl(record.filePath),
+    width: record.width,
+    height: record.height,
+    prompt: record.task.prompt,
+    size: record.task.size,
+    createdAt: record.createdAt.toISOString(),
+  }));
 }
 
 export async function getKvHistoryAction(
@@ -270,7 +296,20 @@ export async function deleteDirectHistoryItemAction(
     return { success: false, error: "删除参数不完整" };
   }
 
-  const deletedCount = await deleteDirectHistoryByUserIdAndFilePath(user.id, normalizedPath);
+  const pathCandidates = getGeneratedImagePathCandidates(normalizedPath);
+  const deletedGeneratedImages = await prisma.generatedImage.deleteMany({
+    where: {
+      userId: user.id,
+      filePath: {
+        in: pathCandidates,
+      },
+    },
+  });
+
+  const deletedLegacyRecords = await Promise.all(
+    pathCandidates.map((candidate) => deleteDirectHistoryByUserIdAndFilePath(user.id, candidate)),
+  );
+  const deletedCount = deletedGeneratedImages.count + deletedLegacyRecords.reduce((sum, count) => sum + count, 0);
   if (!deletedCount) {
     return { success: false, error: "未找到可删除的记录" };
   }

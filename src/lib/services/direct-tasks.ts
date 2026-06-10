@@ -442,7 +442,7 @@ export async function processDirectGenerateTaskById(taskId: string) {
 }
 
 export async function recoverStaleDirectTasks() {
-  const staleBefore = new Date(Date.now() - Number(process.env.DIRECT_STALE_TASK_MS ?? 15 * 60 * 1000));
+  const staleBefore = new Date(Date.now() - Number(process.env.DIRECT_STALE_TASK_MS ?? 5 * 60 * 1000));
   const recovered = await prisma.generationTask.updateMany({
     where: {
       status: "RUNNING",
@@ -450,7 +450,7 @@ export async function recoverStaleDirectTasks() {
     },
     data: {
       status: "PENDING",
-      errorMessage: "Worker 重启后自动恢复队列",
+      errorMessage: "任务超过 5 分钟未完成，自动重新排队",
       startedAt: null,
       finishedAt: null,
     },

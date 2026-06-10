@@ -7,7 +7,7 @@ import type { CSSProperties } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Notice } from "@/components/notice";
-import { parseSizes } from "@/lib/config";
+import { formatSizeLabel, parseSizes } from "@/lib/config";
 import {
   deleteDirectGenerateTaskAction,
   deleteDirectHistoryItemAction,
@@ -23,6 +23,8 @@ import type { DirectGenerateTaskState } from "@/lib/services/direct-tasks";
 
 const SIZE_STORAGE_KEY = "direct-image-generator-size";
 const SIZE_OPTIONS = parseSizes("1024x1024:0,1024x1536:0,1536x1024:0,1024x1792:0,1792x1024:0");
+const DIRECT_DEFAULT_SIZE = "1024x1024";
+const KV_DEFAULT_SIZE = "1024x1792";
 const HISTORY_PAGE_SIZE = 12;
 const GALLERY_SINGLE_COLUMN_MAX_WIDTH = 720;
 const GALLERY_DOUBLE_COLUMN_MAX_WIDTH = 1080;
@@ -40,28 +42,20 @@ const PENDING_PARTICLES = Array.from({ length: 126 }, (_, index) => {
 function getDisplayAspectRatio(size: string) {
   const [width, height] = size.split("x").map(Number);
   if (!width || !height) return "1 / 1";
-
-  const ratio = width / height;
-  if (ratio > 1) return `${Math.min(ratio, 4 / 3)} / 1`;
-  if (ratio < 1) return `1 / ${Math.min(1 / ratio, 4 / 3)}`;
-  return "1 / 1";
+  return `${width} / ${height}`;
 }
 
 function getImageDisplayAspectRatio(image: GalleryItem) {
-  if (image.size) return getDisplayAspectRatio(image.size);
   if (image.width > 0 && image.height > 0) return getDisplayAspectRatio(`${image.width}x${image.height}`);
+  if (image.size) return getDisplayAspectRatio(image.size);
   return "1 / 1";
 }
 
 function getImageDisplayRatioValue(image: GalleryItem) {
-  const source = image.size || (image.width > 0 && image.height > 0 ? `${image.width}x${image.height}` : "1x1");
+  const source = image.width > 0 && image.height > 0 ? `${image.width}x${image.height}` : image.size || "1x1";
   const [width, height] = source.split("x").map(Number);
   if (!width || !height) return 1;
-
-  const ratio = width / height;
-  if (ratio > 1) return Math.min(ratio, 4 / 3);
-  if (ratio < 1) return 1 / Math.min(1 / ratio, 4 / 3);
-  return 1;
+  return width / height;
 }
 
 function getSizePreviewStyle(size: string): CSSProperties {
@@ -131,12 +125,16 @@ function ActionIcon({ name }: { name: "download" | "retry" | "reuse" | "edit" | 
   );
 }
 
+function normalizeSize(value: string, fallback = DIRECT_DEFAULT_SIZE) {
+  return SIZE_OPTIONS.some((item) => item.label === value) ? value : fallback;
+}
+
 function readStoredSize() {
-  if (typeof window === "undefined") return "";
+  if (typeof window === "undefined") return DIRECT_DEFAULT_SIZE;
   try {
-    return window.localStorage.getItem(SIZE_STORAGE_KEY) || "";
+    return normalizeSize(window.localStorage.getItem(SIZE_STORAGE_KEY) || "");
   } catch {
-    return "";
+    return DIRECT_DEFAULT_SIZE;
   }
 }
 
@@ -170,6 +168,10 @@ type PendingCard = {
   title?: string;
   prompt?: string;
 };
+
+type DeleteTarget =
+  | { kind: "image"; filePath: string; prompt?: string }
+  | { kind: "failed-task"; taskId: string; prompt?: string };
 
 type ReferenceItem = {
   id: string;
@@ -227,7 +229,7 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
   const [state, setState] = useState<DirectGenerateState>({});
   const [userOverview, setUserOverview] = useState<UserOverview>(currentUser);
   const [activeTaskIds, setActiveTaskIds] = useState<string[]>([]);
-  const [size, setSize] = useState(() => (isKvMode ? "1024x1792" : readStoredSize()));
+  const [size, setSize] = useState(() => (isKvMode ? KV_DEFAULT_SIZE : readStoredSize()));
   const [prompt, setPrompt] = useState(
     isKvMode
       ? "产品：\n品牌：\n核心卖点：\n目标人群：\n画面风格：高端电商主KV，产品居中，干净背景，卖点信息可视化。"
@@ -240,9 +242,13 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
   const [historyLoading, setHistoryLoading] = useState(false);
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [lightboxImage, setLightboxImage] = useState<GalleryItem | null>(null);
+  const [naturalAspectRatios, setNaturalAspectRatios] = useState<Record<string, string>>({});
   const [pendingCards, setPendingCards] = useState<PendingCard[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitMessage, setSubmitMessage] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const [deletingKey, setDeletingKey] = useState("");
+  const [toastMessage, setToastMessage] = useState("");
   const [kvBrand, setKvBrand] = useState("");
   const [kvInfo, setKvInfo] = useState("");
   const [kvLogo, setKvLogo] = useState<ReferenceItem | null>(null);
@@ -267,6 +273,14 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
 
   useEffect(() => {
     if (!isKvMode) window.localStorage.setItem(SIZE_STORAGE_KEY, size);
+  }, [isKvMode, size]);
+
+  useEffect(() => {
+    const fallback = isKvMode ? KV_DEFAULT_SIZE : DIRECT_DEFAULT_SIZE;
+    const normalizedSize = normalizeSize(size, fallback);
+    if (normalizedSize !== size) {
+      setSize(normalizedSize);
+    }
   }, [isKvMode, size]);
 
   useEffect(() => {
@@ -581,61 +595,82 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
   }
 
   async function handleDownloadImage(filePath: string) {
-    try {
-      const response = await fetch(filePath, { cache: "no-store" });
-      if (!response.ok) {
-        throw new Error("下载失败");
+    const downloadUrl = `/api/direct-generate/download?url=${encodeURIComponent(filePath)}`;
+    const extensionMatch = filePath.match(/\.(png|jpe?g|webp|svg)(?:$|\?)/i);
+    const extension = extensionMatch?.[1]?.toLowerCase() || "png";
+    const pathName = filePath.split("?")[0]?.split("/").filter(Boolean).pop();
+    const baseName = pathName?.replace(/\.(png|jpe?g|webp|svg)$/i, "") || "imagegen";
+    const anchor = document.createElement("a");
+
+    anchor.href = downloadUrl;
+    anchor.download = `${baseName}.${extension === "jpg" ? "jpeg" : extension}`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  }
+
+  function requestDeleteImage(image: GalleryItem) {
+    setDeleteTarget({ kind: "image", filePath: image.filePath, prompt: image.prompt });
+  }
+
+  function requestDeleteFailedTask(pendingCard: PendingCard) {
+    setDeleteTarget({
+      kind: "failed-task",
+      taskId: pendingCard.taskId,
+      prompt: pendingCard.prompt || pendingCard.error,
+    });
+  }
+
+  function handleImageLoaded(filePath: string, naturalWidth: number, naturalHeight: number) {
+    if (!naturalWidth || !naturalHeight) return;
+    const aspectRatio = `${naturalWidth} / ${naturalHeight}`;
+    setNaturalAspectRatios((current) => {
+      if (current[filePath] === aspectRatio) return current;
+      return { ...current, [filePath]: aspectRatio };
+    });
+  }
+
+  async function confirmDeleteTarget() {
+    if (!deleteTarget || deletingKey) return;
+
+    if (deleteTarget.kind === "image") {
+      setDeletingKey(deleteTarget.filePath);
+      const result = await deleteDirectHistoryItemAction(deleteTarget.filePath);
+      setDeletingKey("");
+      if (!result.success) {
+        setToastMessage(result.error || "删除失败");
+        return;
       }
-
-      const blob = await response.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      const extensionMatch = filePath.match(/\.(png|jpe?g|webp|svg)(?:$|\?)/i);
-      const extension = extensionMatch?.[1]?.toLowerCase() || "png";
-      const pathName = filePath.split("?")[0]?.split("/").filter(Boolean).pop();
-      const baseName = pathName?.replace(/\.(png|jpe?g|webp|svg)$/i, "") || "imagegen";
-
-      anchor.href = blobUrl;
-      anchor.download = `${baseName}.${extension === "jpg" ? "jpeg" : extension}`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-    } catch {
-      window.alert("下载失败，请稍后重试");
+      setHistoryImages((current) => (current ?? []).filter((item) => item.filePath !== deleteTarget.filePath));
+      setState((current) => ({
+        ...current,
+        images: current.images?.filter((item) => item.filePath !== deleteTarget.filePath),
+      }));
+      setDeleteTarget(null);
+      setToastMessage("已删除图片");
+      return;
     }
-  }
 
-  async function handleDeleteImage(filePath: string) {
-    const confirmed = window.confirm("确认删除这张图片吗？");
-    if (!confirmed) return;
-    const result = await deleteDirectHistoryItemAction(filePath);
+    setDeletingKey(deleteTarget.taskId);
+    if (deleteTarget.taskId.startsWith("failed-") || deleteTarget.taskId.startsWith("local-")) {
+      setPendingCards((current) => current.filter((card) => card.taskId !== deleteTarget.taskId));
+      setActiveTaskIds((current) => current.filter((id) => id !== deleteTarget.taskId));
+      setDeletingKey("");
+      setDeleteTarget(null);
+      setToastMessage("已删除失败任务");
+      return;
+    }
+
+    const result = await deleteDirectGenerateTaskAction(deleteTarget.taskId);
+    setDeletingKey("");
     if (!result.success) {
-      window.alert(result.error || "删除失败");
+      setToastMessage(result.error || "删除失败");
       return;
     }
-    setHistoryImages((current) => (current ?? []).filter((item) => item.filePath !== filePath));
-    setState((current) => ({
-      ...current,
-      images: current.images?.filter((item) => item.filePath !== filePath),
-    }));
-  }
-
-  async function handleDeleteFailedTask(taskId: string) {
-    const confirmed = window.confirm("确认删除这条失败任务吗？");
-    if (!confirmed) return;
-    if (taskId.startsWith("failed-") || taskId.startsWith("local-")) {
-      setPendingCards((current) => current.filter((card) => card.taskId !== taskId));
-      setActiveTaskIds((current) => current.filter((id) => id !== taskId));
-      return;
-    }
-    const result = await deleteDirectGenerateTaskAction(taskId);
-    if (!result.success) {
-      window.alert(result.error || "删除失败");
-      return;
-    }
-    setPendingCards((current) => current.filter((card) => card.taskId !== taskId));
-    setActiveTaskIds((current) => current.filter((id) => id !== taskId));
+    setPendingCards((current) => current.filter((card) => card.taskId !== deleteTarget.taskId));
+    setActiveTaskIds((current) => current.filter((id) => id !== deleteTarget.taskId));
+    setDeleteTarget(null);
+    setToastMessage("已删除失败任务");
   }
 
   async function handleRetryFailedTask(taskId: string) {
@@ -848,6 +883,15 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                 <strong>{isKvMode ? "KV STUDIO" : "IMAGE STUDIO"}</strong>
               </p>
             </div>
+            <div className="new-home-studio-summary">
+              <p className="new-home-summary-kicker">{isKvMode ? "Commercial Workflow" : "Prompt Workspace"}</p>
+              <h1 className="new-home-summary-title">{isKvMode ? "电商视觉工作台" : "图片生成工作台"}</h1>
+              <p className="new-home-summary-text">
+                {isKvMode
+                  ? "上传商品素材后，按场景拆分队列，稳定产出可继续编辑的 KV 结果。"
+                  : "写提示词、补参考图、切换尺寸，结果会按真实比例沉淀在右侧历史区。"}
+              </p>
+            </div>
           </div>
 
           <div className="new-home-keybox">
@@ -861,15 +905,30 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                 <Link href="/admin/users" className="new-home-admin-link">用户</Link>
               ) : null}
             </div>
+            <div className="new-home-quick-stats" aria-label="工作台概览">
+              <div className="new-home-stat">
+                <span>队列中</span>
+                <strong>{runningPendingCards.length}</strong>
+              </div>
+              <div className="new-home-stat">
+                <span>历史图</span>
+                <strong>{galleryImages.length}</strong>
+              </div>
+            </div>
           </div>
         </header>
 
         <section className="new-home-workspace">
           <form className="new-home-form-panel" onSubmit={(event) => void handleSubmit(event)}>
             <div className="new-home-panel-head">
-              <div>
+              <div className="new-home-panel-copy">
                 <p className="new-home-panel-kicker">{isKvMode ? "AGENT INPUT" : "INPUT"}</p>
                 <h2 className="new-home-panel-title">{isKvMode ? "电商KV" : "直接生成"}</h2>
+                <p className="new-home-panel-description">
+                  {isKvMode
+                    ? "按商品素材、卖点和场景要求拆分任务，统一进入队列。"
+                    : "把提示词、参考图和尺寸集中在一个面板里完成。"}
+                </p>
               </div>
               {isKvMode ? <Link href="/studio" className="new-home-mode-link">普通生成</Link> : <Link href="/kv" className="new-home-mode-link">KV入口</Link>}
             </div>
@@ -1032,7 +1091,7 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                   <span>提示词</span>
                   <textarea
                     name="prompt"
-                    rows={8}
+                    rows={5}
                     placeholder="描述你想要的画面"
                     value={prompt}
                     onChange={(event) => setPrompt(event.target.value)}
@@ -1081,7 +1140,7 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
 
             <div className="new-home-form-footer">
               <div className="new-home-field new-home-size-field">
-                <span>尺寸</span>
+                <span>生成尺寸</span>
                 <input type="hidden" name="size" value={size} readOnly />
                 <div className="new-home-size-options" role="radiogroup" aria-label="生成尺寸">
                   {SIZE_OPTIONS.map((item) => (
@@ -1099,6 +1158,7 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                         aria-hidden="true"
                       />
                       <strong>{item.displayName}</strong>
+                      <em>{item.label.replace("x", " × ")}</em>
                     </button>
                   ))}
                 </div>
@@ -1129,9 +1189,14 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
 
           <section ref={resultPanelRef} className="new-home-result-panel">
             <div className="new-home-panel-head">
-              <div>
+              <div className="new-home-panel-copy">
                 <p className="new-home-panel-kicker">{isKvMode ? "QUEUE OUTPUT" : "RESULT"}</p>
                 <h2 className="new-home-panel-title">{isKvMode ? "KV队列" : "生成结果"}</h2>
+                <p className="new-home-panel-description">
+                  {isKvMode
+                    ? "查看正在生成、失败可重试、完成后直接进入历史图区。"
+                    : "所有已生成图片都保留在这里，支持搜索、复用、继续编辑和下载。"}
+                </p>
               </div>
               <div className="new-home-history-pill">
                 <span>HISTORY</span>
@@ -1140,12 +1205,20 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
             </div>
 
             <div className="new-home-panel-toolbar">
+              <div className="new-home-toolbar-copy">
+                <strong>{isKvMode ? "队列与历史" : "历史与结果"}</strong>
+                <span>{runningPendingCards.length ? `${runningPendingCards.length} 个任务正在处理中` : "当前没有排队任务"}</span>
+              </div>
               <input
                 className="new-home-search-input"
                 placeholder={isKvMode ? "搜索KV历史图片" : "搜索历史图片"}
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
               />
+              <div className="new-home-toolbar-stats">
+                <span>{failedPendingCards.length} 失败</span>
+                <strong>{filteredImages.length} 可见</strong>
+              </div>
             </div>
 
             <Notice type="error" message={state.error} />
@@ -1204,9 +1277,10 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                               <button
                                 type="button"
                                 className="new-home-card-action"
-                                onClick={() => void handleDeleteFailedTask(pendingCard.taskId)}
+                                onClick={() => requestDeleteFailedTask(pendingCard)}
                                 aria-label="删除"
                                 title="删除"
+                                disabled={deletingKey === pendingCard.taskId}
                               >
                                 <span aria-hidden="true">⌫</span>
                               </button>
@@ -1229,7 +1303,7 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                           <article key={`${image.filePath}-${columnIndex}-${imageIndex}`} className="new-home-history-card">
                             <div
                               className="new-home-thumb-wrap"
-                              style={{ aspectRatio: getImageDisplayAspectRatio(image) }}
+                              style={{ aspectRatio: naturalAspectRatios[image.filePath] || getImageDisplayAspectRatio(image) }}
                             >
                               <button
                                 type="button"
@@ -1244,6 +1318,13 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                                   className="new-home-image"
                                   unoptimized
                                   loading={eagerIndex < 6 ? "eager" : "lazy"}
+                                  onLoad={(event) =>
+                                    handleImageLoaded(
+                                      image.filePath,
+                                      event.currentTarget.naturalWidth,
+                                      event.currentTarget.naturalHeight,
+                                    )
+                                  }
                                 />
                               </button>
                               <button
@@ -1260,6 +1341,7 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                               </button>
                               <div className="new-home-image-meta">
                                 {image.createdAt ? <span>{formatHistoryDate(image.createdAt)}</span> : null}
+                                {image.size ? <span>{formatSizeLabel(image.size)}</span> : null}
                               </div>
                               <div className="new-home-history-body">
                                 {image.prompt ? <p className="new-home-card-prompt">{image.prompt}</p> : null}
@@ -1294,9 +1376,10 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                                   <button
                                     type="button"
                                     className="new-home-card-action"
-                                    onClick={() => void handleDeleteImage(image.filePath)}
+                                    onClick={() => requestDeleteImage(image)}
                                     aria-label="删除"
                                     title="删除"
+                                    disabled={deletingKey === image.filePath}
                                   >
                                     <ActionIcon name="delete" />
                                   </button>
@@ -1342,9 +1425,10 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
                           <button
                             type="button"
                             className="new-home-card-action"
-                            onClick={() => void handleDeleteFailedTask(pendingCard.taskId)}
+                            onClick={() => requestDeleteFailedTask(pendingCard)}
                             aria-label="删除"
                             title="删除"
+                            disabled={deletingKey === pendingCard.taskId}
                           >
                             <span aria-hidden="true">⌫</span>
                           </button>
@@ -1401,6 +1485,45 @@ export function NewHomeStudio({ currentUser, mode = "image" }: { currentUser: Us
               />
             </div>
           </div>
+        ) : null}
+
+        {deleteTarget ? (
+          <div className="new-home-confirm-backdrop" role="dialog" aria-modal="true" onClick={() => setDeleteTarget(null)}>
+            <div className="new-home-confirm-card" onClick={(event) => event.stopPropagation()}>
+              <div className="new-home-confirm-mark" aria-hidden="true">
+                <ActionIcon name="delete" />
+              </div>
+              <div className="new-home-confirm-copy">
+                <p className="new-home-panel-kicker">DELETE</p>
+                <h2>{deleteTarget.kind === "image" ? "删除这张图片？" : "删除这条失败任务？"}</h2>
+                <p>
+                  {deleteTarget.kind === "image"
+                    ? "删除后会从当前历史记录里移除，不影响已经保存到本地的下载文件。"
+                    : "删除后这条失败记录会从队列中移除。"}
+                </p>
+                {deleteTarget.prompt ? <span>{deleteTarget.prompt}</span> : null}
+              </div>
+              <div className="new-home-confirm-actions">
+                <button type="button" className="new-home-confirm-secondary" onClick={() => setDeleteTarget(null)}>
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="new-home-confirm-danger"
+                  onClick={() => void confirmDeleteTarget()}
+                  disabled={Boolean(deletingKey)}
+                >
+                  {deletingKey ? "删除中..." : "确认删除"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {toastMessage ? (
+          <button type="button" className="new-home-toast" onClick={() => setToastMessage("")}>
+            {toastMessage}
+          </button>
         ) : null}
       </section>
     </main>

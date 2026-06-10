@@ -606,7 +606,7 @@ export async function updateRiskControlSettingsAction(formData: FormData) {
   await saveRiskControlConfig({
     enabled: formData.get("enabled") === "on",
     mode,
-    baseUrl: String(formData.get("baseUrl") ?? "https://api.openai.com").trim() || "https://api.openai.com",
+    baseUrl: String(formData.get("baseUrl") ?? "http://127.0.0.1:8080").trim() || "http://127.0.0.1:8080",
     model: String(formData.get("model") ?? "omni-moderation-latest").trim() || "omni-moderation-latest",
     apiKeys: String(formData.get("apiKeys") ?? "")
       .split(/\r?\n/)

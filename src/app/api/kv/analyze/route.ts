@@ -4,6 +4,8 @@ import { NextResponse } from "next/server";
 import { getCurrentSession } from "@/lib/auth";
 import { appendDirectImageLog } from "@/lib/services/direct-log";
 
+const LOCAL_OPENAI_BASE_URL = "http://127.0.0.1:8080/v1";
+
 const KV_SCENES = [
   { id: "01", title: "01:主KV视觉", description: "Hero Shot，严格还原产品图" },
   { id: "02", title: "02:生活/使用场景", description: "Lifestyle，展示实际使用" },
@@ -66,7 +68,7 @@ export async function POST(request: Request) {
 
   const client = new OpenAI({
     apiKey,
-    baseURL: process.env.OPENAI_BASE_URL || undefined,
+    baseURL: process.env.OPENAI_BASE_URL || LOCAL_OPENAI_BASE_URL,
     timeout: Number(process.env.OPENAI_REQUEST_TIMEOUT_MS || 120000),
   });
   const model = process.env.OPENAI_KV_MODEL || "gpt-5.4";
@@ -92,7 +94,7 @@ export async function POST(request: Request) {
   await appendDirectImageLog("kv.analyze.request", {
     userId: session.user.id,
     model,
-    baseURL: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+    baseURL: process.env.OPENAI_BASE_URL || LOCAL_OPENAI_BASE_URL,
     sceneIds,
     productImageCount: productImages.length,
     logoImageCount: logoFiles.length,

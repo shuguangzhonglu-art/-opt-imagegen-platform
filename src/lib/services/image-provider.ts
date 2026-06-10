@@ -47,6 +47,7 @@ type OpenAiRequestOptions = {
 };
 
 const GENERATED_DIR = path.join(process.cwd(), "public", "generated");
+const LOCAL_OPENAI_BASE_URL = "http://127.0.0.1:8080/v1";
 const OPENAI_REQUEST_TIMEOUT_MS = Number(process.env.OPENAI_REQUEST_TIMEOUT_MS || 600000);
 const RESPONSES_RETRY_LIMIT = 2;
 const RESPONSES_POLL_INTERVAL_MS = 3000;
@@ -685,7 +686,7 @@ async function generateViaImagesApi(
   options?: OpenAiRequestOptions,
 ): Promise<GeneratedAsset[]> {
   const apiKey = options?.apiKey || process.env.OPENAI_API_KEY;
-  const baseUrl = options?.baseURL || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
+  const baseUrl = options?.baseURL || process.env.OPENAI_BASE_URL || LOCAL_OPENAI_BASE_URL;
 
   if (!apiKey) {
     return generateMockImages(input);
@@ -911,7 +912,7 @@ async function generateOpenAiImagesWithOptions(
     } catch (error) {
       logImageProviderError({
         provider: "openai-compatible-responses",
-        baseURL: options.baseURL || "https://api.openai.com/v1",
+        baseURL: options.baseURL || LOCAL_OPENAI_BASE_URL,
         model,
         taskId: input.taskId,
         sourceImagePath: input.sourceImagePath,
@@ -930,7 +931,7 @@ async function generateOpenAiImagesWithOptions(
   } catch (error) {
     logImageProviderError({
       provider: "openai-compatible",
-      baseURL: options.baseURL || "https://api.openai.com/v1",
+      baseURL: options.baseURL || LOCAL_OPENAI_BASE_URL,
       model,
       taskId: input.taskId,
       sourceImagePath: input.sourceImagePath,
@@ -946,7 +947,7 @@ async function generateViaResponsesApi(
   model: string,
   options?: { apiKey?: string; baseURL?: string },
 ): Promise<GeneratedAsset[]> {
-  const baseUrl = options?.baseURL || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
+  const baseUrl = options?.baseURL || process.env.OPENAI_BASE_URL || LOCAL_OPENAI_BASE_URL;
   const apiKey = options?.apiKey || process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error("未配置 OPENAI_API_KEY");
@@ -1181,7 +1182,7 @@ export async function generateImages(input: GenerateImageInput) {
   const model = getOpenAIModel();
   const requestOptions = {
     apiKey: process.env.OPENAI_API_KEY,
-    baseURL: process.env.OPENAI_BASE_URL || undefined,
+    baseURL: process.env.OPENAI_BASE_URL || LOCAL_OPENAI_BASE_URL,
   };
 
   try {

@@ -35,7 +35,7 @@ export type RiskControlStatus = {
   availableKeys: number;
 };
 
-const DEFAULT_BASE_URL = "https://api.openai.com";
+const DEFAULT_BASE_URL = "http://127.0.0.1:8080";
 const DEFAULT_MODEL = "omni-moderation-latest";
 const DEFAULT_BLOCK_MESSAGE = "内容审计命中风险规则，请调整输入后重试";
 

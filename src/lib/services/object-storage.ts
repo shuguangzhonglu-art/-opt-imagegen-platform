@@ -85,6 +85,39 @@ export function normalizeStoredImageUrl(filePath: string) {
   }
 }
 
+export function getGeneratedImagePathCandidates(filePath: string) {
+  const trimmedPath = filePath.trim();
+  if (!trimmedPath) return [];
+
+  const candidates = new Set<string>([trimmedPath]);
+  const addGeneratedPath = (pathname: string) => {
+    const normalizedPath = pathname.startsWith("/") ? pathname : `/${pathname}`;
+    const generatedIndex = normalizedPath.indexOf("/generated/");
+    if (generatedIndex === -1) return;
+
+    const publicPath = normalizedPath.slice(generatedIndex);
+    candidates.add(publicPath);
+    candidates.add(publicPath.replace(/^\/+/, ""));
+  };
+
+  addGeneratedPath(trimmedPath);
+
+  try {
+    const parsed = new URL(trimmedPath);
+    addGeneratedPath(parsed.pathname);
+
+    const normalizedUrl = normalizeStoredImageUrl(trimmedPath);
+    if (normalizedUrl !== trimmedPath) {
+      candidates.add(normalizedUrl);
+      addGeneratedPath(normalizedUrl);
+    }
+  } catch {
+    // Local generated paths are handled above.
+  }
+
+  return Array.from(candidates);
+}
+
 function getContentType(fileName: string) {
   const extension = path.extname(fileName).toLowerCase();
   if (extension === ".jpg" || extension === ".jpeg") return "image/jpeg";

@@ -48,7 +48,7 @@ Required production values:
 ```env
 DATABASE_URL="file:/opt/imagegen-platform/data/prod.db"
 OPENAI_API_KEY=""
-OPENAI_BASE_URL="https://hemasir.online/v1"
+OPENAI_BASE_URL="http://127.0.0.1:8080/v1"
 OPENAI_IMAGE_MODEL="gpt-image-2"
 OPENAI_FALLBACK_IMAGE_MODEL="gpt-image-2"
 OPENAI_WIRE_API="images"
